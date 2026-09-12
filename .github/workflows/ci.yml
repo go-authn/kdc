@@ -38,9 +38,12 @@ jobs:
           pkgx +kerberos.org -- klist -V
       # And the judge must be reachable in THIS lane: a skip here looks
       # exactly like a pass.
+      # klist -V, not klist: without a ticket cache klist exits non-zero, and
+      # this step is asking whether MIT is USABLE, not whether somebody is
+      # logged in.
       - name: the judge is there
         if: matrix.os == 'ubuntu-latest'
-        run: pkgx +kerberos.org -- klist
+        run: pkgx +kerberos.org -- klist -V
       - run: go vet ./...
       - name: gofmt
         if: matrix.os == 'ubuntu-latest'
