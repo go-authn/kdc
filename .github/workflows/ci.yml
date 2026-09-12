@@ -1,0 +1,145 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GOWORK: "off"
+  CGO_ENABLED: "0"
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with: { go-version: stable, check-latest: true, cache: true }
+      # MIT Kerberos itself, as a judge: a real KDC issues the ticket and
+      # MIT's own gss-client presents it. Ubuntu's krb5 packages do not ship
+      # gss-client (it lives in the sample code), so the bottle is used.
+      # Only the CLIENT is borrowed: this package IS the KDC, so a second one
+      # would prove nothing about it.
+      - name: MIT Kerberos
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          curl -fsS https://pkgx.sh | sh
+          pkgx +kerberos.org -- klist -V
+      # And the judge must be reachable in THIS lane: a skip here looks
+      # exactly like a pass.
+      - name: the judge is there
+        if: matrix.os == 'ubuntu-latest'
+        run: pkgx +kerberos.org -- klist
+      - run: go vet ./...
+      - name: gofmt
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          unformatted=$(gofmt -l $(git ls-files '*.go'))
+          if [ -n "$unformatted" ]; then
+            echo "::error::these files are not gofmt-clean:"; echo "$unformatted"; exit 1
+          fi
+      - run: go test -count=1 ./...
+        env:
+          KDC_REQUIRE_JUDGE: ${{ matrix.os == 'ubuntu-latest' && '1' || '' }}
+      # ⛔ "ok  github.com/go-authn/kdc  0.054s" is not evidence the judge
+      # ran. The test logs the principal MIT authenticated as; this looks for
+      # that line and fails without it, so a judge that silently stopped
+      # running cannot pass as a green lane.
+      - name: the judge actually ran
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        env:
+          KDC_REQUIRE_JUDGE: "1"
+        run: |
+          go test -count=1 -v -run TestMITClientGetsATGTAndAServiceTicket ./... | tee judge.log
+          grep -q "were served by this realm" judge.log || {
+            echo "::error::MIT's client was never served by this realm"; exit 1; }
+
+  race:
+    name: race detector
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with: { go-version: stable, check-latest: true, cache: true }
+      # ⛔ The judge belongs in EVERY lane that runs the tests, not only the
+      # one named "test": without it the differential test skips, and a skip
+      # is not a failure.
+      - name: MIT Kerberos
+        run: |
+          curl -fsS https://pkgx.sh | sh
+          pkgx +kerberos.org -- klist -V
+      - run: go test -race -count=1 ./...
+        env:
+          KDC_REQUIRE_JUDGE: "1"
+      - name: the judge actually ran
+        shell: bash
+        env:
+          KDC_REQUIRE_JUDGE: "1"
+        run: |
+          go test -race -count=1 -v -run TestMITClientGetsATGTAndAServiceTicket ./... | tee judge.log
+          grep -q "were served by this realm" judge.log || {
+            echo "::error::MIT's client was never served by this realm"; exit 1; }
+
+  arches:
+    name: arch ${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goarch: [amd64, arm64, riscv64, loong64, ppc64le, s390x]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with: { go-version: stable, check-latest: true, cache: true }
+      - run: GOARCH=${{ matrix.goarch }} go build ./...
+
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with: { go-version: stable, check-latest: true, cache: true }
+      # ⛔ The judge belongs in EVERY lane that runs the tests. Without a realm
+      # the differential tests skip, and the figure this lane prints would be
+      # of a run that never spoke to MIT.
+      - name: MIT Kerberos
+        run: |
+          curl -fsS https://pkgx.sh | sh
+          pkgx +kerberos.org -- klist -V
+      - name: Measure
+        env:
+          KDC_REQUIRE_JUDGE: "1"
+        run: |
+          set -euo pipefail
+          # The floor is what is actually reached today, not a round number.
+          # What is left uncovered is named rather than hidden: asn1.Marshal
+          # of a constant OID, and the branches that fire only when the
+          # machine's CSPRNG fails.
+          FLOOR=80.0
+          go test -count=1 -coverprofile=cover.out -coverpkg=./... ./... >/dev/null
+          go tool cover -func=cover.out | tail -20
+          cov=$(go tool cover -func=cover.out | tail -1 | awk '{print $3}' | tr -d '%')
+          echo "coverage: ${cov}%  floor: ${FLOOR}%"
+          # Written as an `if` rather than `awk ... && { ... }`: in that form
+          # the list's status is awk's, and a lane comfortably above its floor
+          # fails saying nothing about why.
+          if awk -v c="$cov" -v f="$FLOOR" 'BEGIN{exit !(c+0 < f+0)}'; then
+            echo "::error::coverage ${cov}% fell below the recorded floor ${FLOOR}%"
+            exit 1
+          fi
