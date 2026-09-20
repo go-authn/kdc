@@ -1,6 +1,10 @@
 # kdc
 
-Issue Kerberos tickets from a [go-authn/directory](https://github.com/go-authn/directory), in Go, with no cgo.
+[![Go Reference](https://pkg.go.dev/badge/github.com/go-authn/kdc.svg)](https://pkg.go.dev/github.com/go-authn/kdc)
+[![License](https://img.shields.io/badge/license-BSD--3--Clause-0A6E96?style=flat-square)](LICENSE)
+[![CI](https://github.com/go-authn/kdc/actions/workflows/ci.yml/badge.svg)](https://github.com/go-authn/kdc/actions/workflows/ci.yml)
+
+**Issue Kerberos tickets from a [go-authn/directory](https://github.com/go-authn/directory), in Go, with no cgo.**
 
 ```go
 srv, err := kdc.New(kdc.Config{
