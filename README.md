@@ -41,6 +41,24 @@ Not implemented: cross-realm referrals, PKINIT, FAST, renewable or postdated
 tickets, and any kadmin protocol. Keys come from the directory and from a
 keytab, and they change where they live.
 
+## One encryption type
+
+Tickets and keys are made with **`aes256-cts-hmac-sha1-96`** (etype 18), and
+nothing else is issued — the weaker types a client may offer are refused even
+when asked for. It is what every Kerberos implementation in use agrees on, so
+this costs no interoperability that a modern client would notice.
+
+The realm says so rather than leaving it to be discovered. The `KRB-ERROR`
+that demands pre-authentication carries an `ETYPE-INFO2` hint naming that
+etype and the salt — which is where a client looks before it derives a key,
+and why the exchange starts with a refusal rather than a reply.
+
+A client that insists on something else fails pre-authentication and is
+answered `KDC_ERR_PREAUTH_FAILED` — the same code a wrong password gets,
+because an unauthenticated caller is told no more than *no*. The server log
+records **both** etypes, its own and the client's, so an operator can tell a
+mismatched cipher from a mistyped password.
+
 ## The judge
 
 MIT's own `kinit` and `kvno`. **No MIT KDC is involved** — the keytab is built

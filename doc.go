@@ -22,4 +22,14 @@
 // pre-authentication required. It does not implement cross-realm referrals,
 // PKINIT, FAST, renewable or postdated tickets, or a kadmin protocol: keys
 // come from the directory and from a keytab, and change where they live.
+//
+// # One encryption type
+//
+// Tickets and keys are made with aes256-cts-hmac-sha1-96 (etype 18) and
+// nothing else is issued, even when a client offers something weaker. The
+// KRB-ERROR that demands pre-authentication carries an ETYPE-INFO2 hint
+// naming that etype and the salt, so a client learns what to derive its key
+// with rather than guessing. A client that insists on another type is
+// answered KDC_ERR_PREAUTH_FAILED, the same code a wrong password gets; the
+// server log records both etypes so an operator can tell the two apart.
 package kdc
