@@ -28,9 +28,13 @@ one: `sqldir` and `hcldir` can, and a `Verifier` — a bind against somebody
 else's LDAP, or a hash comparison — **cannot**, however well it answers "is
 this the right password".
 
-That is a property of Kerberos rather than a limitation here. This package
-refuses at configuration time, so an operator is told before the first
-`kinit` rather than after.
+That is a property of Kerberos rather than a limitation here. `New` cannot see
+it — a directory answers person by person — so the refusal comes at the
+request: a person whose source holds no password is answered
+`KDC_ERR_NULL_KEY` (MIT's `kinit` says *null key*), never the code a wrong
+password gets, so it reads as a configuration to fix rather than a password to
+retype. What `New` does refuse up front is a realm with no name, no directory,
+no keytab, or a keytab without `krbtgt/REALM`.
 
 ## What it implements
 
