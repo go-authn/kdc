@@ -65,7 +65,7 @@ A TGS-REQ buys a ticket only when all of this holds (RFC 4120 §3.3.2):
 - the authenticator's **checksum is over this request's body**, as the bytes
   arrived, with the session key's own keyed checksum. A missing or unkeyed
   checksum is `KRB_AP_ERR_INAPP_CKSUM`, and a wrong one `KRB_AP_ERR_MODIFIED`.
-  Versions up to v0.3.1 never read it, so anybody on the path could rewrite the
+  Versions up to v0.3.2 never read it, so anybody on the path could rewrite the
   service, lifetime or nonce of a request in flight;
 - the client is of this realm and still in the directory
   (`KDC_ERR_C_PRINCIPAL_UNKNOWN` otherwise).
