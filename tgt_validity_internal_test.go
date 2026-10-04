@@ -141,6 +141,7 @@ func TestTGSTicketEndsWithItsTGT(t *testing.T) {
 // timestamp is there to check -- and a verifier-only person is still told
 // NULL_KEY, not PREAUTH_REQUIRED.
 func TestNoKeyIsDerivedForARequestWithoutPreauth(t *testing.T) {
+	freshKeyCache(t)
 	var n int
 	orig := stringToKey
 	stringToKey = func(p, s string, i int64, e etype.EType) ([]byte, error) { n++; return orig(p, s, i, e) }

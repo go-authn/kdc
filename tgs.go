@@ -44,7 +44,17 @@ func (s *Server) serveTGS(req *messages.TGSReq) []byte {
 
 	// The TGT must decrypt under this realm's own krbtgt key. That is the
 	// whole of "did we issue this".
-	tgtKey, _, err := s.cfg.Services.GetEncryptionKey(ap.Ticket.SName, ap.Ticket.Realm, 0, defaultEtype)
+	//
+	// ⛔ Under THAT key, named here -- not the key of whatever SName the
+	// ticket carries, which travels in the clear: a ticket for nfs/host,
+	// forged by whoever holds that one service's key, decrypted under it
+	// and bought a real krbtgt ticket for any name at all. RFC 4120 3.3.2:
+	// the ticket in a TGS-REQ is a ticket-granting ticket.
+	krbtgt := types.PrincipalName{NameType: nametypeSrvInst, NameString: []string{"krbtgt", s.cfg.Realm}}
+	if principalName(ap.Ticket.SName) != principalName(krbtgt) || ap.Ticket.Realm != s.cfg.Realm {
+		return s.krbErr(sname, errorcode.KRB_AP_ERR_NOT_US, "the ticket presented is not a ticket-granting ticket of this realm", nil)
+	}
+	tgtKey, _, err := s.cfg.Services.GetEncryptionKey(krbtgt, s.cfg.Realm, 0, defaultEtype)
 	if err != nil {
 		return s.krbErr(sname, errorcode.KRB_AP_ERR_NOKEY, "this realm has no key for that ticket", nil)
 	}
@@ -88,6 +98,15 @@ func (s *Server) serveTGS(req *messages.TGSReq) []byte {
 	name := ap.Ticket.DecryptedEncPart.CName.NameString
 	if len(name) != 1 {
 		return s.krbErr(sname, errorcode.KDC_ERR_C_PRINCIPAL_UNKNOWN, "not a user principal", nil)
+	}
+	// And still somebody this realm serves: removed from the directory, a
+	// person's TGT buys nothing more (MIT checks the client principal at the
+	// TGS too).
+	if ap.Ticket.DecryptedEncPart.CRealm != s.cfg.Realm {
+		return s.krbErr(sname, errorcode.KDC_ERR_C_PRINCIPAL_UNKNOWN, "a client of another realm", nil)
+	}
+	if _, err := s.lookup(ap.Ticket.DecryptedEncPart.CName); err != nil {
+		return s.krbErr(sname, errorcode.KDC_ERR_C_PRINCIPAL_UNKNOWN, "this realm does not know that client", nil)
 	}
 	rep, err := s.issue(req.ReqBody, name[0], sname, session, keyusage.TGS_REP_ENCPART_SESSION_KEY, msgtype.KRB_TGS_REP, tgt.EndTime)
 	if err != nil {
