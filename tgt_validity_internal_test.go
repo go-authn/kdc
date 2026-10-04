@@ -7,17 +7,9 @@ import (
 	"time"
 
 	"github.com/go-authn/directory"
-	"github.com/jcmturner/gofork/encoding/asn1"
-	"github.com/jcmturner/gokrb5/v8/asn1tools"
-	"github.com/jcmturner/gokrb5/v8/crypto"
 	"github.com/jcmturner/gokrb5/v8/crypto/etype"
-	"github.com/jcmturner/gokrb5/v8/iana"
-	"github.com/jcmturner/gokrb5/v8/iana/asnAppTag"
 	"github.com/jcmturner/gokrb5/v8/iana/errorcode"
 	"github.com/jcmturner/gokrb5/v8/iana/flags"
-	"github.com/jcmturner/gokrb5/v8/iana/keyusage"
-	"github.com/jcmturner/gokrb5/v8/iana/msgtype"
-	"github.com/jcmturner/gokrb5/v8/iana/patype"
 	"github.com/jcmturner/gokrb5/v8/messages"
 	"github.com/jcmturner/gokrb5/v8/types"
 )
@@ -43,37 +35,10 @@ func tgsWithETypes(t *testing.T, s *Server, start, end, till time.Time, invalid 
 	if err != nil {
 		t.Fatal(err)
 	}
-	auth := types.Authenticator{AVNO: iana.PVNO, CRealm: testRealm, CName: client, CTime: now().UTC(), SeqNumber: 1}
-	ab, err := auth.Marshal()
-	if err != nil {
-		t.Fatal(err)
-	}
-	authED, err := crypto.GetEncryptedData(ab, sessionKey, keyusage.TGS_REQ_PA_TGS_REQ_AP_REQ_AUTHENTICATOR, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	apb, err := (&messages.APReq{PVNO: iana.PVNO, MsgType: msgtype.KRB_AP_REQ, APOptions: types.NewKrbFlags(),
-		Ticket: tkt, EncryptedAuthenticator: authED}).Marshal()
-	if err != nil {
-		t.Fatal(err)
-	}
-	type marshalReq struct {
-		PVNO    int                  `asn1:"explicit,tag:1"`
-		MsgType int                  `asn1:"explicit,tag:2"`
-		PAData  types.PADataSequence `asn1:"explicit,optional,tag:3"`
-		ReqBody messages.KDCReqBody  `asn1:"explicit,tag:4"`
-	}
-	rb, err := asn1.Marshal(marshalReq{
-		PVNO: iana.PVNO, MsgType: msgtype.KRB_TGS_REQ,
-		PAData: types.PADataSequence{{PADataType: patype.PA_TGS_REQ, PADataValue: apb}},
-		ReqBody: messages.KDCReqBody{KDCOptions: types.NewKrbFlags(), Realm: testRealm,
-			SName: types.PrincipalName{NameType: nametypeSrvInst, NameString: []string{"nfs", "localhost"}},
-			Till:  till, Nonce: 7, EType: etypes},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return s.handle(asn1tools.AddASNAppTag(rb, asnAppTag.TGSREQ)), sessionKey
+	body := messages.KDCReqBody{KDCOptions: types.NewKrbFlags(), Realm: testRealm,
+		SName: types.PrincipalName{NameType: nametypeSrvInst, NameString: []string{"nfs", "localhost"}},
+		Till:  till, Nonce: 7, EType: etypes}
+	return s.handle(signedTGSReq(t, tkt, sessionKey, client, body, bodyChecksum(t, sessionKey))), sessionKey
 }
 
 func krbErrorCode(t *testing.T, out []byte) int32 {
