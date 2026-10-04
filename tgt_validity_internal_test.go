@@ -26,6 +26,12 @@ import (
 // fresh authenticator, and asks for a service ticket lasting till.
 func tgsWith(t *testing.T, s *Server, start, end, till time.Time, invalid bool) ([]byte, types.EncryptionKey) {
 	t.Helper()
+	return tgsWithETypes(t, s, start, end, till, invalid, []int32{defaultEtype})
+}
+
+// tgsWithETypes is tgsWith offering the given etypes.
+func tgsWithETypes(t *testing.T, s *Server, start, end, till time.Time, invalid bool, etypes []int32) ([]byte, types.EncryptionKey) {
+	t.Helper()
 	tgtSName := types.PrincipalName{NameType: nametypeSrvInst, NameString: []string{"krbtgt", testRealm}}
 	client := types.PrincipalName{NameType: nametypePrincipal, NameString: []string{"alice"}}
 	fl := types.NewKrbFlags()
@@ -62,7 +68,7 @@ func tgsWith(t *testing.T, s *Server, start, end, till time.Time, invalid bool) 
 		PAData: types.PADataSequence{{PADataType: patype.PA_TGS_REQ, PADataValue: apb}},
 		ReqBody: messages.KDCReqBody{KDCOptions: types.NewKrbFlags(), Realm: testRealm,
 			SName: types.PrincipalName{NameType: nametypeSrvInst, NameString: []string{"nfs", "localhost"}},
-			Till:  till, Nonce: 7, EType: []int32{defaultEtype}},
+			Till:  till, Nonce: 7, EType: etypes},
 	})
 	if err != nil {
 		t.Fatal(err)

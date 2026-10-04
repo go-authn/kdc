@@ -11,6 +11,7 @@ srv, err := kdc.New(kdc.Config{
     Realm:    "EXAMPLE.ORG",
     People:   people,          // sqldir, hcldir — anything holding passwords
     Services: keytab,          // krbtgt/REALM, and a key per service
+    Logf:     log.Printf,      // why each request was refused; nil says nothing
 })
 go srv.ServeUDP(pc)
 go srv.ServeTCP(ln)
@@ -67,19 +68,24 @@ spoofed UDP packet naming a real principal costs the realm no key derivation.
 ## One encryption type
 
 Tickets and keys are made with **`aes256-cts-hmac-sha1-96`** (etype 18), and
-nothing else is issued — the weaker types a client may offer are refused even
-when asked for. It is what every Kerberos implementation in use agrees on, so
+nothing else is issued. A request whose etype list does not include 18 is
+answered `KDC_ERR_ETYPE_NOSUPP` (RFC 4120 §3.1.3), before anybody is looked up,
+rather than handed a reply it could not decrypt. It is what every Kerberos implementation in use agrees on, so
 this costs no interoperability that a modern client would notice.
 
 The realm says so rather than leaving it to be discovered. The `KRB-ERROR`
 that demands pre-authentication carries an `ETYPE-INFO2` hint naming that
-etype and the salt — which is where a client looks before it derives a key,
-and why the exchange starts with a refusal rather than a reply.
+etype and the salt (the realm followed by the name, which is what the key is
+derived with) — which is where a client looks before it derives a key, and why
+the exchange starts with a refusal rather than a reply. Before v0.3.0 the salt
+was left out: clients fell back to the default salt, which happens to be this
+one, so nothing failed and nothing showed it.
 
-A client that insists on something else fails pre-authentication and is
-answered `KDC_ERR_PREAUTH_FAILED` — the same code a wrong password gets,
-because an unauthenticated caller is told no more than *no*. The server log
-records **both** etypes, its own and the client's, so an operator can tell a
+A client that lists 18 but encrypts its timestamp under something else fails
+pre-authentication and is answered `KDC_ERR_PREAUTH_FAILED` — the same code a
+wrong password gets, because an unauthenticated caller is told no more than
+*no*. With `Logf` set, the log records **both** etypes, its own and the
+client's (and, for `ETYPE_NOSUPP`, the list offered), so an operator can tell a
 mismatched cipher from a mistyped password.
 
 ## The judge

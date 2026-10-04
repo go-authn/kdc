@@ -51,6 +51,12 @@ func (o onlyOne) Members(string) ([]string, error) { return nil, nil }
 // asReq builds an AS-REQ with whatever pre-authentication is given.
 func asReq(t *testing.T, cname string, sname []string, pa types.PADataSequence) []byte {
 	t.Helper()
+	return asReqETypes(t, cname, sname, pa, []int32{defaultEtype})
+}
+
+// asReqETypes is asReq offering the given etypes.
+func asReqETypes(t *testing.T, cname string, sname []string, pa types.PADataSequence, etypes []int32) []byte {
+	t.Helper()
 	body := messages.KDCReqBody{
 		KDCOptions: types.NewKrbFlags(),
 		CName:      types.PrincipalName{NameType: nametypePrincipal, NameString: []string{cname}},
@@ -58,7 +64,7 @@ func asReq(t *testing.T, cname string, sname []string, pa types.PADataSequence) 
 		SName:      types.PrincipalName{NameType: nametypeSrvInst, NameString: sname},
 		Till:       time.Now().Add(time.Hour).UTC(),
 		Nonce:      42,
-		EType:      []int32{defaultEtype},
+		EType:      etypes,
 	}
 	type marshalReq struct {
 		PVNO    int                  `asn1:"explicit,tag:1"`
