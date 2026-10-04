@@ -23,22 +23,23 @@ func (s *Server) serveAS(req *messages.ASReq) []byte {
 	if err != nil {
 		return s.unknownPrincipal(sname)
 	}
-	key, err := s.cfg.keyFor(id)
-	if err != nil {
-		// The person exists and this realm cannot derive a key for them —
-		// a verifier-only source, most likely. Saying "no key" rather than
-		// "no such principal" is the difference between a configuration to
-		// fix and a name to check.
-		return s.krbErr(sname, errorcode.KDC_ERR_NULL_KEY,
-			"this realm holds no Kerberos key for that principal", nil)
-	}
-
 	ts := findPA(req.PAData, patype.PA_ENC_TIMESTAMP)
 	if ts == nil {
+		// ⛔ No key is derived to say this: PBKDF2 costs milliseconds, and a
+		// request without pre-authentication comes from anybody, over UDP,
+		// from any address it likes. hasKey only asks whether there is a
+		// password to derive from.
+		if !s.cfg.hasKey(id) {
+			return s.nullKey(sname)
+		}
 		// Not a refusal: the client is being TOLD how to authenticate, and
 		// the salt it must use. kinit reads this and prompts for a password.
 		return s.krbErr(sname, errorcode.KDC_ERR_PREAUTH_REQUIRED,
 			"pre-authentication required", s.preauthHint())
+	}
+	key, err := s.cfg.keyFor(id)
+	if err != nil {
+		return s.nullKey(sname)
 	}
 	if err := s.checkTimestamp(ts, key); err != nil {
 		return s.krbErr(sname, errorcode.KDC_ERR_PREAUTH_FAILED, err.Error(), s.preauthHint())
@@ -52,7 +53,7 @@ func (s *Server) serveAS(req *messages.ASReq) []byte {
 			"this realm issues only krbtgt tickets from an AS-REQ", nil)
 	}
 
-	rep, err := s.issue(req.ReqBody, id.Name(), sname, key, keyusage.AS_REP_ENCPART, msgtype.KRB_AS_REP)
+	rep, err := s.issue(req.ReqBody, id.Name(), sname, key, keyusage.AS_REP_ENCPART, msgtype.KRB_AS_REP, time.Time{})
 	if err != nil {
 		return s.krbErr(sname, errorcode.KDC_ERR_SVC_UNAVAILABLE, err.Error(), nil)
 	}
@@ -130,7 +131,7 @@ func (s *Server) checkTimestamp(raw []byte, key types.EncryptionKey) error {
 
 // issue builds a ticket and the reply that carries it.
 func (s *Server) issue(body messages.KDCReqBody, cname string, sname types.PrincipalName,
-	replyKey types.EncryptionKey, usage uint32, mt int) ([]byte, error) {
+	replyKey types.EncryptionKey, usage uint32, mt int, notAfter time.Time) ([]byte, error) {
 
 	start := now().UTC()
 	end := start.Add(s.cfg.lifetime())
@@ -138,6 +139,12 @@ func (s *Server) issue(body messages.KDCReqBody, cname string, sname types.Princ
 		// A client may ask for less. Giving it more than it asked for would
 		// leave a credential alive past the point its holder expects.
 		end = body.Till
+	}
+	// And a ticket bought with a TGT ends no later than the TGT: otherwise
+	// asking the TGS for krbtgt again extends a credential one lifetime at a
+	// time, for ever. notAfter is zero for the AS, which has no TGT.
+	if !notAfter.IsZero() && notAfter.Before(end) {
+		end = notAfter
 	}
 
 	client := types.PrincipalName{NameType: nametypePrincipal, NameString: []string{cname}}
@@ -192,4 +199,13 @@ func (s *Server) issue(body messages.KDCReqBody, cname string, sname types.Princ
 		return t.Marshal()
 	}
 	return rep.Marshal()
+}
+
+// nullKey says the person exists and this realm cannot derive a key for
+// them -- a verifier-only source, most likely. Saying "no key" rather than
+// "no such principal" is the difference between a configuration to fix and a
+// name to check.
+func (s *Server) nullKey(sname types.PrincipalName) []byte {
+	return s.krbErr(sname, errorcode.KDC_ERR_NULL_KEY,
+		"this realm holds no Kerberos key for that principal", nil)
 }
