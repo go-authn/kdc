@@ -1,6 +1,6 @@
 module github.com/go-authn/kdc
 
-go 1.26.4
+go 1.27.1
 
 require (
 	github.com/go-authn/directory v0.8.0
