@@ -42,6 +42,11 @@ no keytab, or a keytab without `krbtgt/REALM`.
 AS-REQ and TGS-REQ, over UDP and TCP, with encrypted-timestamp
 pre-authentication **required**.
 
+What an unauthenticated peer can hold is bounded: a TCP message, its length
+included, must arrive within 30 seconds; at most 256 TCP connections are served
+at once, and one more is closed on accept; at most 64 datagrams are answered at
+once, and one more is dropped (the client resends, or falls back to TCP).
+
 Not implemented: cross-realm referrals, PKINIT, FAST, renewable or postdated
 tickets, and any kadmin protocol. Keys come from the directory and from a
 keytab, and they change where they live.

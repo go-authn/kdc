@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"time"
 )
 
 // Server answers Kerberos requests for one realm.
@@ -40,6 +41,26 @@ func New(cfg Config) (*Server, error) {
 // realm's are small and a client that sends more is not asking for a ticket.
 const maxRequest = 1 << 16
 
+// ⛔ Limits on what an unauthenticated peer can hold (security audit: a
+// connection that sent two bytes of its length and went silent held a
+// goroutine and a descriptor forever, and so did a few thousand of them).
+// Variables so that a test can shorten them; nothing outside the package sets
+// them.
+var (
+	// tcpIdle is how long one message may take to arrive, its length
+	// included, and how long a reply may take to be written. A realm's
+	// requests arrive in milliseconds.
+	tcpIdle = 30 * time.Second
+	// maxTCPConns bounds the connections served at once. One more is closed
+	// as soon as it is accepted; a client then retries, as it would on any
+	// refused connection.
+	maxTCPConns = 256
+	// maxUDPWorkers bounds the datagrams answered at once. One more is
+	// dropped, which UDP allows and every client handles: it resends, or
+	// falls back to TCP.
+	maxUDPWorkers = 64
+)
+
 // ErrClosed is returned by ServeUDP and ServeTCP after Close.
 var ErrClosed = errors.New("kdc: server closed")
 
@@ -56,6 +77,7 @@ func (s *Server) ServeUDP(pc net.PacketConn) error {
 	s.mu.Unlock()
 
 	buf := make([]byte, maxRequest)
+	workers := make(chan struct{}, maxUDPWorkers)
 	for {
 		n, addr, err := pc.ReadFrom(buf)
 		if err != nil {
@@ -66,11 +88,16 @@ func (s *Server) ServeUDP(pc net.PacketConn) error {
 		}
 		// A copy, because the next ReadFrom reuses the buffer and the reply
 		// is built from what was read.
+		select {
+		case workers <- struct{}{}:
+		default:
+			continue // every worker busy: dropped, and the client resends
+		}
 		req := make([]byte, n)
 		copy(req, buf[:n])
 		s.wg.Add(1)
 		go func() {
-			defer s.wg.Done()
+			defer func() { <-workers; s.wg.Done() }()
 			if out := s.handle(req); len(out) > 0 {
 				pc.WriteTo(out, addr)
 			}
@@ -103,6 +130,11 @@ func (s *Server) ServeTCP(ln net.Listener) error {
 			c.Close()
 			return ErrClosed
 		}
+		if len(s.conns) >= maxTCPConns {
+			s.mu.Unlock()
+			c.Close()
+			continue
+		}
 		s.conns[c] = struct{}{}
 		s.mu.Unlock()
 		s.wg.Add(1)
@@ -121,6 +153,11 @@ func (s *Server) serveConn(c net.Conn) {
 		s.mu.Unlock()
 	}()
 	for {
+		// One deadline for the whole message, length included: a peer that
+		// trickles a byte at a time does not reset it.
+		if err := c.SetReadDeadline(time.Now().Add(tcpIdle)); err != nil {
+			return
+		}
 		var hdr [4]byte
 		if _, err := io.ReadFull(c, hdr[:]); err != nil {
 			return
@@ -142,6 +179,9 @@ func (s *Server) serveConn(c net.Conn) {
 		}
 		var olen [4]byte
 		binary.BigEndian.PutUint32(olen[:], uint32(len(out)))
+		if err := c.SetWriteDeadline(time.Now().Add(tcpIdle)); err != nil {
+			return
+		}
 		if _, err := c.Write(append(olen[:], out...)); err != nil {
 			return
 		}
