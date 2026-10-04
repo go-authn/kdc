@@ -24,9 +24,11 @@ type Server struct {
 
 // New checks a configuration and returns a server for it.
 //
-// It refuses a realm it could not serve — no keytab, no krbtgt key, a
-// directory that publishes no passwords — rather than starting and failing at
-// the first kinit, where the error reaches a person who cannot fix it.
+// It refuses a realm it could not serve -- no realm, no directory, no keytab,
+// a keytab without the krbtgt key -- rather than starting and failing at the
+// first kinit, where the error reaches a person who cannot fix it. A person
+// whose source holds no password (a verifier) is refused per request, with
+// KDC_ERR_NULL_KEY: whether a source holds passwords is known only per person.
 func New(cfg Config) (*Server, error) {
 	if err := cfg.check(); err != nil {
 		return nil, err
