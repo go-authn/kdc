@@ -24,9 +24,29 @@ func (s *Server) handle(req []byte) []byte {
 	}
 	var tgs messages.TGSReq
 	if err := tgs.Unmarshal(req); err == nil {
-		return s.serveTGS(&tgs)
+		return s.serveTGS(&tgs, reqBodyOf(req))
 	}
 	return nil
+}
+
+// reqBodyOf is the KDC-REQ-BODY of a request exactly as it arrived.
+//
+// ⛔ The authenticator's checksum is over these BYTES (RFC 4120 3.3.2), not
+// over whatever re-encoding the decoded fields produce: two encoders may
+// disagree about a field and both be valid, and a check against our own
+// re-encoding would then refuse an honest client, or accept a body that
+// differs from the one the client signed.
+func reqBodyOf(req []byte) []byte {
+	var m struct {
+		PVNO    int                  `asn1:"explicit,tag:1"`
+		MsgType int                  `asn1:"explicit,tag:2"`
+		PAData  types.PADataSequence `asn1:"explicit,optional,tag:3"`
+		ReqBody asn1.RawValue        `asn1:"explicit,tag:4"`
+	}
+	if _, err := asn1.UnmarshalWithParams(req, &m, "application,explicit,tag:12"); err != nil {
+		return nil
+	}
+	return m.ReqBody.Bytes
 }
 
 // krbErr renders a KRB-ERROR. A client reads the code and acts on it, so the

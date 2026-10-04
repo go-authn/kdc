@@ -51,6 +51,25 @@ Not implemented: cross-realm referrals, PKINIT, FAST, renewable or postdated
 tickets, and any kadmin protocol. Keys come from the directory and from a
 keytab, and they change where they live.
 
+## What the TGS checks
+
+A TGS-REQ buys a ticket only when all of this holds (RFC 4120 §3.3.2):
+
+- the ticket presented is a **ticket-granting ticket of this realm**: it
+  names `krbtgt/REALM` and is decrypted under that key, named by the KDC,
+  not under the key of whatever service the ticket says it is for. Before
+  v0.3.1 a service ticket forged with one service's key bought tickets for
+  any other (`KRB_AP_ERR_NOT_US`);
+- the authenticator decrypts under the session key inside it, within
+  `MaxSkew` of this clock;
+- the authenticator's **checksum is over this request's body**, as the bytes
+  arrived, with the session key's own keyed checksum. A missing or unkeyed
+  checksum is `KRB_AP_ERR_INAPP_CKSUM`, and a wrong one `KRB_AP_ERR_MODIFIED`.
+  Versions up to v0.3.2 never read it, so anybody on the path could rewrite the
+  service, lifetime or nonce of a request in flight;
+- the client is of this realm and still in the directory
+  (`KDC_ERR_C_PRINCIPAL_UNKNOWN` otherwise).
+
 ## How long a ticket lives
 
 `Config.Lifetime` caps a ticket, ten hours when zero (MIT's default), and a

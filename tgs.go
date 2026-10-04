@@ -17,7 +17,7 @@ import (
 // No password is involved. What is checked is that the TGT was issued by this
 // realm — it decrypts under the krbtgt key — and that whoever presents it
 // holds the session key inside, which the authenticator proves.
-func (s *Server) serveTGS(req *messages.TGSReq) []byte {
+func (s *Server) serveTGS(req *messages.TGSReq, body []byte) []byte {
 	sname := req.ReqBody.SName
 	if !offersDefault(req.ReqBody.EType) {
 		return s.etypeNotOffered(sname, req.ReqBody.EType)
@@ -69,6 +69,14 @@ func (s *Server) serveTGS(req *messages.TGSReq) []byte {
 	if err := ap.DecryptAuthenticator(session); err != nil {
 		return s.krbErr(sname, errorcode.KRB_AP_ERR_BAD_INTEGRITY,
 			"the authenticator does not decrypt under the ticket's session key", nil)
+	}
+	// ⛔ And the authenticator must be about THIS request. RFC 4120 3.3.2:
+	// its checksum is over the KDC-REQ-BODY, keyed with the session key.
+	// Unchecked, the body was bound to nothing -- the service, the lifetime
+	// and the nonce of a request in flight could be rewritten by anybody on
+	// the path, and the ticket issued for what they wrote.
+	if code, why := checkBodyChecksum(ap.Authenticator.Cksum, session, body); code != 0 {
+		return s.krbErr(sname, code, why, nil)
 	}
 	if d := now().Sub(ap.Authenticator.CTime); d > s.cfg.skew() || d < -s.cfg.skew() {
 		return s.krbErr(sname, errorcode.KRB_AP_ERR_SKEW, errClockSkew.Error(), nil)
@@ -130,4 +138,31 @@ func checkCipher(ed types.EncryptedData) error {
 		return errBadPreauth
 	}
 	return nil
+}
+
+// checkBodyChecksum says whether an authenticator's checksum is over this
+// request body, under this session key. Zero is yes; otherwise the code and
+// the reason to refuse with.
+//
+// The checksum must be the session key's own keyed one, the type a client
+// gets by asking for "the default for this key" (RFC 3961 4: every enctype
+// names a mandatory checksum, and MIT's and Heimdal's clients use it here).
+// An unkeyed checksum such as a CRC or a bare hash is refused before it is
+// looked at: anybody can recompute one over a body they rewrote, which is
+// why RFC 4120 3.3.2 requires a collision-proof keyed checksum.
+func checkBodyChecksum(c types.Checksum, session types.EncryptionKey, body []byte) (int32, string) {
+	et, err := crypto.GetEtype(session.KeyType)
+	if err != nil {
+		return errorcode.KRB_AP_ERR_INAPP_CKSUM, "the session key's type names no checksum"
+	}
+	if len(c.Checksum) == 0 {
+		return errorcode.KRB_AP_ERR_INAPP_CKSUM, "the authenticator carries no checksum over the request"
+	}
+	if c.CksumType != et.GetHashID() {
+		return errorcode.KRB_AP_ERR_INAPP_CKSUM, "the authenticator's checksum is not the session key's keyed checksum"
+	}
+	if len(body) == 0 || !et.VerifyChecksum(session.KeyValue, body, c.Checksum, keyusage.TGS_REQ_PA_TGS_REQ_AP_REQ_AUTHENTICATOR_CHKSUM) {
+		return errorcode.KRB_AP_ERR_MODIFIED, "the authenticator's checksum is not over this request"
+	}
+	return 0, ""
 }
