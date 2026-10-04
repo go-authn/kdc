@@ -28,9 +28,13 @@ one: `sqldir` and `hcldir` can, and a `Verifier` — a bind against somebody
 else's LDAP, or a hash comparison — **cannot**, however well it answers "is
 this the right password".
 
-That is a property of Kerberos rather than a limitation here. This package
-refuses at configuration time, so an operator is told before the first
-`kinit` rather than after.
+That is a property of Kerberos rather than a limitation here. `New` cannot see
+it — a directory answers person by person — so the refusal comes at the
+request: a person whose source holds no password is answered
+`KDC_ERR_NULL_KEY` (MIT's `kinit` says *null key*), never the code a wrong
+password gets, so it reads as a configuration to fix rather than a password to
+retype. What `New` does refuse up front is a realm with no name, no directory,
+no keytab, or a keytab without `krbtgt/REALM`.
 
 ## What it implements
 
@@ -40,6 +44,25 @@ pre-authentication **required**.
 Not implemented: cross-realm referrals, PKINIT, FAST, renewable or postdated
 tickets, and any kadmin protocol. Keys come from the directory and from a
 keytab, and they change where they live.
+
+## How long a ticket lives
+
+`Config.Lifetime` caps a ticket, ten hours when zero (MIT's default), and a
+client asking for less gets less. `Config.MaxSkew` is how far a client's clock
+may be from this one, five minutes when zero.
+
+Since nothing revokes a Kerberos ticket, its end is the whole of how a password
+change or a removed person comes to matter, so the TGS holds a TGT to it:
+
+- a TGT past its end time is refused with `KRB_AP_ERR_TKT_EXPIRED`, and one
+  before its start time, or flagged invalid, with `KRB_AP_ERR_TKT_NYV`. Those
+  times were written by this KDC's clock, so no skew is allowed them;
+- a ticket bought with a TGT ends no later than that TGT, so asking for
+  `krbtgt` again cannot stretch a credential one lifetime at a time.
+
+An AS-REQ without pre-authentication is answered without deriving the
+person's key: PBKDF2 runs only once there is a timestamp to check, so a
+spoofed UDP packet naming a real principal costs the realm no key derivation.
 
 ## One encryption type
 
