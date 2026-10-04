@@ -3,6 +3,7 @@ package kdc
 import (
 	"github.com/jcmturner/gokrb5/v8/crypto"
 	"github.com/jcmturner/gokrb5/v8/iana/errorcode"
+	"github.com/jcmturner/gokrb5/v8/iana/flags"
 	"github.com/jcmturner/gokrb5/v8/iana/keyusage"
 	"github.com/jcmturner/gokrb5/v8/iana/msgtype"
 	"github.com/jcmturner/gokrb5/v8/iana/patype"
@@ -60,6 +61,18 @@ func (s *Server) serveTGS(req *messages.TGSReq) []byte {
 		return s.krbErr(sname, errorcode.KRB_AP_ERR_SKEW, errClockSkew.Error(), nil)
 	}
 
+	// ⛔ The TGT's end is the whole of how a Kerberos credential is revoked:
+	// a password change or a removed person stops mattering only when the
+	// TGTs already handed out run out. Its times were written by THIS clock,
+	// so no skew is allowed them -- the skew above is for the client's.
+	tgt := ap.Ticket.DecryptedEncPart
+	if !now().Before(tgt.EndTime) {
+		return s.krbErr(sname, errorcode.KRB_AP_ERR_TKT_EXPIRED, "the ticket has expired", nil)
+	}
+	if tgt.StartTime.After(now()) || types.IsFlagSet(&tgt.Flags, flags.Invalid) {
+		return s.krbErr(sname, errorcode.KRB_AP_ERR_TKT_NYV, "the ticket is not yet valid", nil)
+	}
+
 	// The service asked for must exist in the keytab; otherwise there is no
 	// key to seal its ticket with.
 	if _, _, err := s.cfg.Services.GetEncryptionKey(sname, s.cfg.Realm, 0, defaultEtype); err != nil {
@@ -73,7 +86,7 @@ func (s *Server) serveTGS(req *messages.TGSReq) []byte {
 	if len(name) != 1 {
 		return s.krbErr(sname, errorcode.KDC_ERR_C_PRINCIPAL_UNKNOWN, "not a user principal", nil)
 	}
-	rep, err := s.issue(req.ReqBody, name[0], sname, session, keyusage.TGS_REP_ENCPART_SESSION_KEY, msgtype.KRB_TGS_REP)
+	rep, err := s.issue(req.ReqBody, name[0], sname, session, keyusage.TGS_REP_ENCPART_SESSION_KEY, msgtype.KRB_TGS_REP, tgt.EndTime)
 	if err != nil {
 		return s.krbErr(sname, errorcode.KDC_ERR_SVC_UNAVAILABLE, err.Error(), nil)
 	}

@@ -103,6 +103,17 @@ func (c *Config) skew() time.Duration {
 	return c.MaxSkew
 }
 
+// hasKey says whether keyFor would find a password to derive from, without
+// deriving anything.
+func (c *Config) hasKey(id *directory.Identity) bool {
+	_, err := id.Derive(func(string) ([]byte, error) { return nil, nil })
+	return err == nil
+}
+
+// stringToKey is the derivation keyFor runs; a variable so that a test can
+// count how often an unauthenticated request makes it run.
+var stringToKey = rfc3962.StringToKeyIter
+
 // keyFor derives a person's long-term key.
 //
 // The salt is the realm followed by the principal name with no separator,
@@ -121,7 +132,7 @@ func (c *Config) keyFor(id *directory.Identity) (types.EncryptionKey, error) {
 		// empty s2kparams outright rather than applying the default, which
 		// surfaces as KDC_ERR_NULL_KEY — a message about the key, from a
 		// failure about a parameter.
-		return rfc3962.StringToKeyIter(password, salt, 4096, et)
+		return stringToKey(password, salt, 4096, et)
 	})
 	if err != nil {
 		return types.EncryptionKey{}, err
