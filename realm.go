@@ -1,9 +1,11 @@
 package kdc
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-authn/directory"
@@ -132,7 +134,7 @@ func (c *Config) keyFor(id *directory.Identity) (types.EncryptionKey, error) {
 		// empty s2kparams outright rather than applying the default, which
 		// surfaces as KDC_ERR_NULL_KEY — a message about the key, from a
 		// failure about a parameter.
-		return stringToKey(password, salt, 4096, et)
+		return derived.get(password, salt, func() ([]byte, error) { return stringToKey(password, salt, 4096, et) })
 	})
 	if err != nil {
 		return types.EncryptionKey{}, err
@@ -146,3 +148,54 @@ func principalName(p types.PrincipalName) string { return strings.Join(p.NameStr
 // saltFor is the salt keyFor derives with, and the one the ETYPE-INFO2 hint
 // names: one function, so the two cannot drift apart.
 func (c *Config) saltFor(id *directory.Identity) string { return c.Realm + id.Name() }
+
+// derived remembers the keys keyFor has derived.
+//
+// ⛔ Every AS-REQ carrying a PA-ENC-TIMESTAMP needs the person's key, and a
+// well-formed but false timestamp costs the sender a hundred bytes: without
+// this, each one cost the realm a PBKDF2 of 4096 iterations (1.3 ms against
+// 22 µs, measured), the same asymmetry v0.2.1 removed only for a request with
+// no timestamp at all. MIT never derives per request: it keeps the keys. Here
+// the directory keeps passwords, so the derivation is kept instead, keyed by
+// a SHA-256 of the salt and the password -- a changed password is another
+// entry, the old one never matches again -- and bounded.
+var derived = &keyCache{m: map[[32]byte][]byte{}}
+
+// maxCachedKeys bounds the cache: past it, an entry is dropped. A realm's
+// people, not an attacker's names, fill it: a name the directory does not hold
+// never reaches keyFor.
+const maxCachedKeys = 65536
+
+type keyCache struct {
+	mu sync.Mutex
+	m  map[[32]byte][]byte
+}
+
+func (c *keyCache) get(password, salt string, derive func() ([]byte, error)) ([]byte, error) {
+	h := sha256.New()
+	h.Write([]byte(salt))
+	h.Write([]byte{0})
+	h.Write([]byte(password))
+	var k [32]byte
+	h.Sum(k[:0])
+	c.mu.Lock()
+	if v, ok := c.m[k]; ok {
+		c.mu.Unlock()
+		return append([]byte(nil), v...), nil
+	}
+	c.mu.Unlock()
+	v, err := derive()
+	if err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	if len(c.m) >= maxCachedKeys {
+		for old := range c.m {
+			delete(c.m, old)
+			break
+		}
+	}
+	c.m[k] = append([]byte(nil), v...)
+	c.mu.Unlock()
+	return v, nil
+}
