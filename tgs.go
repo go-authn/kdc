@@ -19,6 +19,9 @@ import (
 // holds the session key inside, which the authenticator proves.
 func (s *Server) serveTGS(req *messages.TGSReq) []byte {
 	sname := req.ReqBody.SName
+	if !offersDefault(req.ReqBody.EType) {
+		return s.etypeNotOffered(sname, req.ReqBody.EType)
+	}
 
 	raw := findPA(req.PAData, patype.PA_TGS_REQ)
 	if raw == nil {

@@ -26,10 +26,12 @@
 // # One encryption type
 //
 // Tickets and keys are made with aes256-cts-hmac-sha1-96 (etype 18) and
-// nothing else is issued, even when a client offers something weaker. The
-// KRB-ERROR that demands pre-authentication carries an ETYPE-INFO2 hint
-// naming that etype and the salt, so a client learns what to derive its key
-// with rather than guessing. A client that insists on another type is
-// answered KDC_ERR_PREAUTH_FAILED, the same code a wrong password gets; the
-// server log records both etypes so an operator can tell the two apart.
+// nothing else is issued: a request whose etype list lacks 18 is answered
+// KDC_ERR_ETYPE_NOSUPP (RFC 4120 §3.1.3). The KRB-ERROR that demands
+// pre-authentication carries an ETYPE-INFO2 hint naming that etype and the
+// salt, so a client learns what to derive its key with rather than guessing.
+// A client that encrypts its timestamp under another type is answered
+// KDC_ERR_PREAUTH_FAILED, the same code a wrong password gets; with
+// Config.Logf set, the log records both etypes so an operator can tell the two
+// apart.
 package kdc

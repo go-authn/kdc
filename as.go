@@ -19,6 +19,11 @@ import (
 // serveAS answers an AS-REQ: somebody with a password asking for a TGT.
 func (s *Server) serveAS(req *messages.ASReq) []byte {
 	sname := req.ReqBody.SName
+	// Before the principal is looked up, so the answer says nothing about
+	// who exists.
+	if !offersDefault(req.ReqBody.EType) {
+		return s.etypeNotOffered(sname, req.ReqBody.EType)
+	}
 	id, err := s.lookup(req.ReqBody.CName)
 	if err != nil {
 		return s.unknownPrincipal(sname)
@@ -35,14 +40,14 @@ func (s *Server) serveAS(req *messages.ASReq) []byte {
 		// Not a refusal: the client is being TOLD how to authenticate, and
 		// the salt it must use. kinit reads this and prompts for a password.
 		return s.krbErr(sname, errorcode.KDC_ERR_PREAUTH_REQUIRED,
-			"pre-authentication required", s.preauthHint())
+			"pre-authentication required", s.preauthHint(s.cfg.saltFor(id)))
 	}
 	key, err := s.cfg.keyFor(id)
 	if err != nil {
 		return s.nullKey(sname)
 	}
 	if err := s.checkTimestamp(ts, key); err != nil {
-		return s.krbErr(sname, errorcode.KDC_ERR_PREAUTH_FAILED, err.Error(), s.preauthHint())
+		return s.krbErr(sname, errorcode.KDC_ERR_PREAUTH_FAILED, err.Error(), s.preauthHint(s.cfg.saltFor(id)))
 	}
 
 	// The service asked for. An AS-REQ normally asks for krbtgt/REALM, and
@@ -65,9 +70,12 @@ func (s *Server) serveAS(req *messages.ASReq) []byte {
 // The salt is the load-bearing part. A client that guesses it derives a key
 // that decrypts nothing, and the failure is reported as a wrong password —
 // so a realm that omits this refuses every correct password without ever
-// saying why.
-func (s *Server) preauthHint() types.PADataSequence {
-	info := types.ETypeInfo2{{EType: defaultEtype}}
+// saying why. ⛔ It used to be omitted: the field is optional, gokrb5 leaves an
+// empty one off the wire, and a client then falls back to the default salt
+// (RFC 4120 §4), which happens to be the one keyFor uses -- so nothing failed,
+// and the comment above was false until a README audit marshalled the hint.
+func (s *Server) preauthHint(salt string) types.PADataSequence {
+	info := types.ETypeInfo2{{EType: defaultEtype, Salt: salt}}
 	b, err := asn1.Marshal(info)
 	if err != nil {
 		return nil
@@ -208,4 +216,27 @@ func (s *Server) issue(body messages.KDCReqBody, cname string, sname types.Princ
 func (s *Server) nullKey(sname types.PrincipalName) []byte {
 	return s.krbErr(sname, errorcode.KDC_ERR_NULL_KEY,
 		"this realm holds no Kerberos key for that principal", nil)
+}
+
+// offersDefault reports whether a request lists the one etype this realm
+// issues. RFC 4120 §3.1.3: "If the server cannot accommodate any encryption
+// type requested by the client, an error message with code
+// KDC_ERR_ETYPE_NOSUPP is returned." Issuing etype 18 to a client that did
+// not ask for it hands it a reply it cannot decrypt.
+func offersDefault(etypes []int32) bool {
+	for _, e := range etypes {
+		if e == defaultEtype {
+			return true
+		}
+	}
+	return false
+}
+
+// etypeNotOffered refuses a request that lists no etype this realm issues, and
+// records what the client did offer, so an operator can tell a client stuck on
+// an old cipher from anything else.
+func (s *Server) etypeNotOffered(sname types.PrincipalName, offered []int32) []byte {
+	s.logf("kdc: a request offered etypes %v; this realm issues only %d", offered, defaultEtype)
+	return s.krbErr(sname, errorcode.KDC_ERR_ETYPE_NOSUPP,
+		"this realm issues only aes256-cts-hmac-sha1-96 (etype 18)", nil)
 }

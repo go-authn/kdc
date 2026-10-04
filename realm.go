@@ -121,7 +121,7 @@ var stringToKey = rfc3962.StringToKeyIter
 // encrypts its timestamp. Getting it wrong produces a KDC that refuses every
 // correct password, and says nothing about why.
 func (c *Config) keyFor(id *directory.Identity) (types.EncryptionKey, error) {
-	salt := c.Realm + id.Name()
+	salt := c.saltFor(id)
 	raw, err := id.KerberosKey(func(password string) ([]byte, error) {
 		et, err := crypto.GetEtype(defaultEtype)
 		if err != nil {
@@ -142,3 +142,7 @@ func (c *Config) keyFor(id *directory.Identity) (types.EncryptionKey, error) {
 
 // principalName renders a PrincipalName the way a realm writes it.
 func principalName(p types.PrincipalName) string { return strings.Join(p.NameString, "/") }
+
+// saltFor is the salt keyFor derives with, and the one the ETYPE-INFO2 hint
+// names: one function, so the two cannot drift apart.
+func (c *Config) saltFor(id *directory.Identity) string { return c.Realm + id.Name() }
