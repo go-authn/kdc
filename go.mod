@@ -3,7 +3,7 @@ module github.com/go-authn/kdc
 go 1.27.1
 
 require (
-	github.com/go-authn/directory v0.11.0
+	github.com/go-authn/directory v0.11.1
 	github.com/jcmturner/gofork v1.7.6
 	github.com/jcmturner/gokrb5/v8 v8.4.4
 )
