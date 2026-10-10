@@ -73,7 +73,10 @@ A TGS-REQ buys a ticket only when all of this holds (RFC 4120 §3.3.2):
 ## How long a ticket lives
 
 `Config.Lifetime` caps a ticket, ten hours when zero (MIT's default), and a
-client asking for less gets less. `Config.MaxSkew` is how far a client's clock
+client asking for less gets less. A `till` of `19700101000000Z` asks for the
+longest ticket allowed (RFC 4120 5.4.1), which is what Heimdal's `kgetcred`
+sends; a `till` already past is refused with `KDC_ERR_NEVER_VALID`, never
+answered with a ticket expired on arrival. `Config.MaxSkew` is how far a client's clock
 may be from this one, five minutes when zero.
 
 Since nothing revokes a Kerberos ticket, its end is the whole of how a password
