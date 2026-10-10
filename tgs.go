@@ -1,6 +1,7 @@
 package kdc
 
 import (
+	"errors"
 	"github.com/jcmturner/gokrb5/v8/crypto"
 	"github.com/jcmturner/gokrb5/v8/iana/errorcode"
 	"github.com/jcmturner/gokrb5/v8/iana/flags"
@@ -118,6 +119,9 @@ func (s *Server) serveTGS(req *messages.TGSReq, body []byte) []byte {
 	}
 	rep, err := s.issue(req.ReqBody, name[0], sname, session, keyusage.TGS_REP_ENCPART_SESSION_KEY, msgtype.KRB_TGS_REP, tgt.EndTime)
 	if err != nil {
+		if errors.Is(err, errNeverValid) {
+			return s.krbErr(sname, errorcode.KDC_ERR_NEVER_VALID, err.Error(), nil)
+		}
 		return s.krbErr(sname, errorcode.KDC_ERR_SVC_UNAVAILABLE, err.Error(), nil)
 	}
 	return rep

@@ -19,6 +19,8 @@ var (
 	// failure that is nobody's mistake, and a client cannot tell it from a
 	// wrong password unless the KDC says.
 	errClockSkew = errors.New("the client's clock is too far from this one")
+	// errNeverValid is a ticket whose end would come before its start.
+	errNeverValid = errors.New("the ticket asked for would end before it starts")
 )
 
 // ErrNotAPerson reports a principal that is not a single name — a service

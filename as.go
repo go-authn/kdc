@@ -1,6 +1,7 @@
 package kdc
 
 import (
+	"errors"
 	"time"
 
 	"github.com/jcmturner/gofork/encoding/asn1"
@@ -60,6 +61,9 @@ func (s *Server) serveAS(req *messages.ASReq) []byte {
 
 	rep, err := s.issue(req.ReqBody, id.Name(), sname, key, keyusage.AS_REP_ENCPART, msgtype.KRB_AS_REP, time.Time{})
 	if err != nil {
+		if errors.Is(err, errNeverValid) {
+			return s.krbErr(sname, errorcode.KDC_ERR_NEVER_VALID, err.Error(), nil)
+		}
 		return s.krbErr(sname, errorcode.KDC_ERR_SVC_UNAVAILABLE, err.Error(), nil)
 	}
 	return rep
@@ -143,7 +147,7 @@ func (s *Server) issue(body messages.KDCReqBody, cname string, sname types.Princ
 
 	start := now().UTC()
 	end := start.Add(s.cfg.lifetime())
-	if !body.Till.IsZero() && body.Till.Before(end) {
+	if !tillUnbounded(body.Till) && body.Till.Before(end) {
 		// A client may ask for less. Giving it more than it asked for would
 		// leave a credential alive past the point its holder expects.
 		end = body.Till
@@ -153,6 +157,11 @@ func (s *Server) issue(body messages.KDCReqBody, cname string, sname types.Princ
 	// time, for ever. notAfter is zero for the AS, which has no TGT.
 	if !notAfter.IsZero() && notAfter.Before(end) {
 		end = notAfter
+	}
+	// A ticket that would end before it starts is refused, not issued already
+	// expired: RFC 4120 3.1.3 answers it with KDC_ERR_NEVER_VALID.
+	if !end.After(start) {
+		return nil, errNeverValid
 	}
 
 	client := types.PrincipalName{NameType: nametypePrincipal, NameString: []string{cname}}
@@ -240,3 +249,13 @@ func (s *Server) etypeNotOffered(sname types.PrincipalName, offered []int32) []b
 	return s.krbErr(sname, errorcode.KDC_ERR_ETYPE_NOSUPP,
 		"this realm issues only aes256-cts-hmac-sha1-96 (etype 18)", nil)
 }
+
+// tillUnbounded reports whether a request's till names no end at all.
+//
+// ⛔ RFC 4120 5.4.1: "if the requested endtime is 19700101000000Z, the
+// requested ticket is to have the maximum endtime permitted according to KDC
+// policy". That value decodes as the Unix epoch, which is NOT Go's zero time,
+// so testing IsZero alone took it for a real end and issued tickets that had
+// expired in 1970 -- what Heimdal's kgetcred asks for, and klist then showed
+// as >>>Expired<<<.
+func tillUnbounded(t time.Time) bool { return t.IsZero() || t.Equal(time.Unix(0, 0)) }
