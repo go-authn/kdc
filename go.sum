@@ -1,8 +1,8 @@
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
-github.com/go-authn/directory v0.11.0 h1:7FHRQv9AQUF841DU498wVrVnUDQwzX221fQlaRoBcVQ=
-github.com/go-authn/directory v0.11.0/go.mod h1:IxyO/dvr5zsKIWYbjpiTa2JUz20XCBxtPCST6+QamlU=
+github.com/go-authn/directory v0.11.1 h1:7LrjCSG2Dl5szx3H/s3FFx8wT1ONNMeFq39UXVraGdA=
+github.com/go-authn/directory v0.11.1/go.mod h1:JzIgDzAps98mFdKJ+JjlwUewySmH7+fkPtxhss6s6vM=
 github.com/gorilla/securecookie v1.1.1/go.mod h1:ra0sb63/xPlUeL+yeDciTfxMRAA+MP+HVt/4epWDjd4=
 github.com/gorilla/sessions v1.2.1/go.mod h1:dk2InVEVJ0sfLlnXv9EAgkf6ecYs/i80K/zI+bUmuGM=
 github.com/hashicorp/go-uuid v1.0.2/go.mod h1:6SBZvOh/SIDV7/2o3Jml5SYk/TvGqwFJ/bN7x4byOro=
