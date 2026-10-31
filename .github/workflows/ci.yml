@@ -25,7 +25,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
-        with: { go-version: '1.27.2', check-latest: true, cache: true }
+        with: { go-version-file: go.mod, check-latest: true, cache: true }
       # MIT Kerberos itself, as a judge: a real KDC issues the ticket and
       # MIT's own gss-client presents it. Ubuntu's krb5 packages do not ship
       # gss-client (it lives in the sample code), so the bottle is used.
@@ -78,7 +78,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
-        with: { go-version: '1.27.2', check-latest: true, cache: true }
+        with: { go-version-file: go.mod, check-latest: true, cache: true }
       # ⛔ The judge belongs in EVERY lane that runs the tests, not only the
       # one named "test": without it the differential test skips, and a skip
       # is not a failure.
@@ -98,6 +98,17 @@ jobs:
           grep -q "were served by this realm" judge.log || {
             echo "::error::MIT's client was never served by this realm"; exit 1; }
 
+  # The toolchain is the one go.mod names (go-version-file), so a floor too
+  # low to carry the standard library's fixes is a finding HERE: govulncheck
+  # exits 3 on any, and the job fails.
+  govulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with: { go-version-file: go.mod, check-latest: true, cache: true }
+      - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
   arches:
     name: arch ${{ matrix.goarch }}
     runs-on: ubuntu-latest
@@ -108,7 +119,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
-        with: { go-version: '1.27.2', check-latest: true, cache: true }
+        with: { go-version-file: go.mod, check-latest: true, cache: true }
       - run: GOARCH=${{ matrix.goarch }} go build ./...
       # ⛔ `qemu-user-static` is a VIRTUAL package on Ubuntu 26.04, which
       # `ubuntu-latest` became on 2026-10-19, and apt refuses to choose between its
@@ -155,7 +166,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
-        with: { go-version: '1.27.2', check-latest: true, cache: true }
+        with: { go-version-file: go.mod, check-latest: true, cache: true }
       # ⛔ The judge belongs in EVERY lane that runs the tests. Without a realm
       # the differential tests skip, and the figure this lane prints would be
       # of a run that never spoke to MIT.
