@@ -20,6 +20,9 @@ import (
 // holds the session key inside, which the authenticator proves.
 func (s *Server) serveTGS(req *messages.TGSReq, body []byte) []byte {
 	sname := req.ReqBody.SName
+	if req.ReqBody.Realm != s.cfg.Realm {
+		return s.krbErr(sname, errorcode.KDC_ERR_WRONG_REALM, "this KDC does not serve that realm", nil)
+	}
 	if !offersDefault(req.ReqBody.EType) {
 		return s.etypeNotOffered(sname, req.ReqBody.EType)
 	}
@@ -91,7 +94,9 @@ func (s *Server) serveTGS(req *messages.TGSReq, body []byte) []byte {
 	if !now().Before(tgt.EndTime) {
 		return s.krbErr(sname, errorcode.KRB_AP_ERR_TKT_EXPIRED, "the ticket has expired", nil)
 	}
-	if tgt.StartTime.After(now()) || types.IsFlagSet(&tgt.Flags, flags.Invalid) {
+	// The start gets the configured skew (MIT's check_tgs does too): the
+	// clock can be stepped back after the TGT was written.
+	if tgt.StartTime.After(now().Add(s.cfg.skew())) || types.IsFlagSet(&tgt.Flags, flags.Invalid) {
 		return s.krbErr(sname, errorcode.KRB_AP_ERR_TKT_NYV, "the ticket is not yet valid", nil)
 	}
 
@@ -115,6 +120,10 @@ func (s *Server) serveTGS(req *messages.TGSReq, body []byte) []byte {
 		return s.krbErr(sname, errorcode.KDC_ERR_C_PRINCIPAL_UNKNOWN, "a client of another realm", nil)
 	}
 	if _, err := s.lookup(ap.Ticket.DecryptedEncPart.CName); err != nil {
+		if errors.Is(err, errDirectoryDown) {
+			s.logf("kdc: the directory could not be read: %v", err)
+			return s.krbErr(sname, errorcode.KDC_ERR_SVC_UNAVAILABLE, "the directory is unavailable", nil)
+		}
 		return s.krbErr(sname, errorcode.KDC_ERR_C_PRINCIPAL_UNKNOWN, "this realm does not know that client", nil)
 	}
 	rep, err := s.issue(req.ReqBody, name[0], sname, session, keyusage.TGS_REP_ENCPART_SESSION_KEY, msgtype.KRB_TGS_REP, tgt.EndTime)

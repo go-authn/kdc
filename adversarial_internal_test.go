@@ -49,13 +49,13 @@ func (o onlyOne) Describe() string                 { return "one person" }
 func (o onlyOne) Members(string) ([]string, error) { return nil, nil }
 
 // asReq builds an AS-REQ with whatever pre-authentication is given.
-func asReq(t *testing.T, cname string, sname []string, pa types.PADataSequence) []byte {
+func asReq(t testing.TB, cname string, sname []string, pa types.PADataSequence) []byte {
 	t.Helper()
 	return asReqETypes(t, cname, sname, pa, []int32{defaultEtype})
 }
 
 // asReqETypes is asReq offering the given etypes.
-func asReqETypes(t *testing.T, cname string, sname []string, pa types.PADataSequence, etypes []int32) []byte {
+func asReqETypes(t testing.TB, cname string, sname []string, pa types.PADataSequence, etypes []int32) []byte {
 	t.Helper()
 	body := messages.KDCReqBody{
 		KDCOptions: types.NewKrbFlags(),
@@ -82,7 +82,7 @@ func asReqETypes(t *testing.T, cname string, sname []string, pa types.PADataSequ
 }
 
 // timestampPA seals a PA-ENC-TIMESTAMP with a given key and time.
-func timestampPA(t *testing.T, key types.EncryptionKey, when time.Time) types.PADataSequence {
+func timestampPA(t testing.TB, key types.EncryptionKey, when time.Time) types.PADataSequence {
 	t.Helper()
 	pt := types.PAEncTSEnc{
 		PATimestamp: when,

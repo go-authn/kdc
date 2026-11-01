@@ -20,6 +20,11 @@ import (
 // serveAS answers an AS-REQ: somebody with a password asking for a TGT.
 func (s *Server) serveAS(req *messages.ASReq) []byte {
 	sname := req.ReqBody.SName
+	// RFC 4120 3.1.3 / MIT do_as_req.c: a request for a realm this KDC does
+	// not serve is answered KDC_ERR_WRONG_REALM, not served.
+	if req.ReqBody.Realm != s.cfg.Realm {
+		return s.krbErr(sname, errorcode.KDC_ERR_WRONG_REALM, "this KDC does not serve that realm", nil)
+	}
 	// Before the principal is looked up, so the answer says nothing about
 	// who exists.
 	if !offersDefault(req.ReqBody.EType) {
@@ -27,6 +32,10 @@ func (s *Server) serveAS(req *messages.ASReq) []byte {
 	}
 	id, err := s.lookup(req.ReqBody.CName)
 	if err != nil {
+		if errors.Is(err, errDirectoryDown) {
+			s.logf("kdc: the directory could not be read: %v", err)
+			return s.krbErr(sname, errorcode.KDC_ERR_SVC_UNAVAILABLE, "the directory is unavailable", nil)
+		}
 		return s.unknownPrincipal(sname)
 	}
 	ts := findPA(req.PAData, patype.PA_ENC_TIMESTAMP)

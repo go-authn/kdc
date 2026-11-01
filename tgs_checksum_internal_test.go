@@ -18,7 +18,7 @@ import (
 // signedTGSReq is a TGS-REQ as a client builds one: the body encoded once,
 // the authenticator's checksum computed by cksum over those bytes, and the
 // same bytes sent.
-func signedTGSReq(t *testing.T, tkt messages.Ticket, sk types.EncryptionKey, client types.PrincipalName,
+func signedTGSReq(t testing.TB, tkt messages.Ticket, sk types.EncryptionKey, client types.PrincipalName,
 	body messages.KDCReqBody, cksum func([]byte) types.Checksum) []byte {
 	t.Helper()
 	bb, err := body.Marshal()
@@ -54,7 +54,7 @@ func signedTGSReq(t *testing.T, tkt messages.Ticket, sk types.EncryptionKey, cli
 
 // bodyChecksum is what an honest client puts in the authenticator: the
 // session key's own keyed checksum, with key usage 6.
-func bodyChecksum(t *testing.T, sk types.EncryptionKey) func([]byte) types.Checksum {
+func bodyChecksum(t testing.TB, sk types.EncryptionKey) func([]byte) types.Checksum {
 	return func(b []byte) types.Checksum {
 		t.Helper()
 		et, err := crypto.GetEtype(sk.KeyType)

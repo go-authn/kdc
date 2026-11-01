@@ -95,7 +95,16 @@ func (s *Server) ServeUDP(pc net.PacketConn) error {
 		}
 		req := make([]byte, n)
 		copy(req, buf[:n])
+		// Add under the lock Close takes before Wait: an Add racing a
+		// Wait on a zero counter is a WaitGroup misuse.
+		s.mu.Lock()
+		if s.closed {
+			s.mu.Unlock()
+			<-workers
+			return ErrClosed
+		}
 		s.wg.Add(1)
+		s.mu.Unlock()
 		go func() {
 			defer func() { <-workers; s.wg.Done() }()
 			if out := s.handle(req); len(out) > 0 {
@@ -136,8 +145,8 @@ func (s *Server) ServeTCP(ln net.Listener) error {
 			continue
 		}
 		s.conns[c] = struct{}{}
-		s.mu.Unlock()
 		s.wg.Add(1)
+		s.mu.Unlock()
 		go func() {
 			defer s.wg.Done()
 			s.serveConn(c)
