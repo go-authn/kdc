@@ -28,6 +28,11 @@ var (
 // keytab, not from this directory.
 var ErrNotAPerson = errors.New("kdc: not a user principal")
 
+// errDirectoryDown is a directory that could not be read. It is an outage, not
+// an absent person, and is answered KDC_ERR_SVC_UNAVAILABLE so that a client
+// retries instead of concluding the principal does not exist.
+var errDirectoryDown = errors.New("kdc: reading the directory")
+
 // lookup finds a person by their Kerberos principal name.
 //
 // It walks the directory rather than indexing it: a Source publishes
@@ -40,7 +45,7 @@ func (s *Server) lookup(p types.PrincipalName) (*directory.Identity, error) {
 	want := p.NameString[0]
 	ids, err := s.cfg.People.Identities()
 	if err != nil {
-		return nil, fmt.Errorf("kdc: reading the directory: %w", err)
+		return nil, fmt.Errorf("%w: %w", errDirectoryDown, err)
 	}
 	for _, id := range ids {
 		if id.Name() == want {

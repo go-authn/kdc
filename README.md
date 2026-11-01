@@ -70,6 +70,26 @@ A TGS-REQ buys a ticket only when all of this holds (RFC 4120 §3.3.2):
 - the client is of this realm and still in the directory
   (`KDC_ERR_C_PRINCIPAL_UNKNOWN` otherwise).
 
+## What an unauthenticated peer can and cannot do (v0.4.5 audit)
+
+- A request for **another realm** is `KDC_ERR_WRONG_REALM`, for both AS and
+  TGS (MIT `do_as_req.c` does the same). Before v0.4.5 it was served.
+- A **directory that cannot be read** is `KDC_ERR_SVC_UNAVAILABLE` (a client
+  retries), no longer `KDC_ERR_C_PRINCIPAL_UNKNOWN` (a client gives up).
+- A TGT whose start is within `MaxSkew` in the future is accepted, so a clock
+  stepped back does not make freshly issued TGTs "not yet valid".
+- A **panic in the third-party ASN.1 decoder** costs one request, not the
+  process: `gokrb5` v8.4.4 panics on a malformed additional-tickets field of a
+  KDC-REQ, found by `FuzzHandle`. The panic and its stack are logged.
+- Names taken from the network are quoted in the log.
+- No account can be AS-REP-roasted: an AS-REQ without pre-authentication is
+  always `KDC_ERR_PREAUTH_REQUIRED` (or `NULL_KEY`) and never a reply sealed
+  under the person's key. Only aes256-cts-hmac-sha1-96 is issued; RC4 and DES
+  are never.
+
+Known and open: there is no replay cache or lookaside for requests (MIT keeps
+one, `kdc_check_lookaside`); a replay inside the skew window is answered again.
+
 ## How long a ticket lives
 
 `Config.Lifetime` caps a ticket, ten hours when zero (MIT's default), and a

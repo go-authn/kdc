@@ -1,6 +1,7 @@
 package kdc
 
 import (
+	"runtime/debug"
 	"time"
 
 	"github.com/jcmturner/gofork/encoding/asn1"
@@ -13,7 +14,15 @@ import (
 // handle turns one request into one reply. An empty reply means nothing
 // sensible can be said and the caller should drop the message: answering
 // noise with a KRB-ERROR would make this a reflector.
-func (s *Server) handle(req []byte) []byte {
+func (s *Server) handle(req []byte) (out []byte) {
+	// Untrusted bytes reach a third-party ASN.1 and crypto stack: a panic
+	// there (gokrb5 has had several) must cost one request, not the process.
+	defer func() {
+		if r := recover(); r != nil {
+			s.logf("kdc: a request panicked the decoder and was dropped: %v\n%s", r, debug.Stack())
+			out = nil
+		}
+	}()
 	// The message type is the second field, but the cheapest way to tell an
 	// AS-REQ from a TGS-REQ is to try each: they differ by an ASN.1
 	// application tag, so a wrong guess fails to parse rather than producing
@@ -59,7 +68,9 @@ func (s *Server) logf(format string, args ...any) {
 }
 
 func (s *Server) krbErr(sname types.PrincipalName, code int32, text string, pa types.PADataSequence) []byte {
-	s.logf("refused %s: %s (code %d)", principalName(sname), text, code)
+	// %q: the name comes from the network, and a raw newline in it would
+	// forge a log line.
+	s.logf("refused %q: %s (code %d)", principalName(sname), text, code)
 	e := messages.NewKRBError(sname, s.cfg.Realm, code, text)
 	if len(pa) > 0 {
 		// The e-data of a PREAUTH_REQUIRED carries the pre-authentication
