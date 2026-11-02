@@ -14,7 +14,24 @@ import (
 // handle turns one request into one reply. An empty reply means nothing
 // sensible can be said and the caller should drop the message: answering
 // noise with a KRB-ERROR would make this a reflector.
-func (s *Server) handle(req []byte) (out []byte) {
+//
+// A request seen before goes no further than the lookaside (replay.go).
+func (s *Server) handle(req []byte) []byte {
+	if rep, hit := s.lookaside.enter(req); hit {
+		if rep == nil {
+			s.logf("kdc: a copy of a request still being answered was dropped")
+		} else {
+			s.logf("kdc: a repeated (retransmitted?) request was answered with its previous reply")
+		}
+		return rep
+	}
+	out := s.serve(req)
+	s.lookaside.finish(req, out)
+	return out
+}
+
+// serve is handle without the lookaside.
+func (s *Server) serve(req []byte) (out []byte) {
 	// Untrusted bytes reach a third-party ASN.1 and crypto stack: a panic
 	// there (gokrb5 has had several) must cost one request, not the process.
 	defer func() {
