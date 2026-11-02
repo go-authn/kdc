@@ -37,6 +37,13 @@ type Config struct {
 	// five minutes, which is what every Kerberos implementation assumes.
 	MaxSkew time.Duration
 
+	// ReplayCacheEntries bounds the TGS replay cache: how many authenticators
+	// accepted inside one MaxSkew window are remembered. Zero or less means
+	// [DefaultReplayCacheEntries]. When it is full of unexpired entries a
+	// TGS-REQ is answered KDC_ERR_SVC_UNAVAILABLE rather than accepted
+	// unchecked; see replay.go.
+	ReplayCacheEntries int
+
 	// Logf, when set, is told why a request was refused.
 	//
 	// It exists because the protocol cannot say: a client is given an error

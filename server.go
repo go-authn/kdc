@@ -13,9 +13,10 @@ import (
 //
 // The zero value is not usable; use [New].
 type Server struct {
-	cfg Config
+	cfg    Config
+	replay *replayCache
 
-	mu     sync.Mutex
+	mu    sync.Mutex
 	closed bool
 	conns  map[net.Conn]struct{}
 	pc     net.PacketConn
@@ -34,7 +35,7 @@ func New(cfg Config) (*Server, error) {
 	if err := cfg.check(); err != nil {
 		return nil, err
 	}
-	return &Server{cfg: cfg, conns: make(map[net.Conn]struct{})}, nil
+	return &Server{cfg: cfg, replay: newReplayCache(cfg.ReplayCacheEntries), conns: make(map[net.Conn]struct{})}, nil
 }
 
 // maxRequest caps one request. RFC 4120 puts no limit on a KDC-REQ, but a
