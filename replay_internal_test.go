@@ -3,6 +3,9 @@
 package kdc
 
 import (
+	"bytes"
+	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -20,14 +23,15 @@ import (
 	"github.com/jcmturner/gokrb5/v8/types"
 )
 
-// Bibliography opened for these: RFC 4120 3.2.3 (an AP-REQ's authenticator is
-// accepted once, KRB_AP_ERR_REPEAT otherwise), 3.3.2 (the PA-TGS-REQ is an
-// AP-REQ), 7.5.9 (KRB_AP_ERR_REPEAT is 34, KDC_ERR_SVC_UNAVAILABLE is 29);
-// MIT krb5 lib/krb5/rcache (entries keyed by client, server, ctime, cusec,
-// forgotten after the skew).
+// Bibliography opened for these: MIT krb5 src/kdc/replay.c (the lookaside:
+// keyed by the request packet, STALE_TIME 2 minutes, LOOKASIDE_MAX_SIZE
+// 10 MiB, oldest discarded first), src/kdc/dispatch.c (a hit resends the
+// stored reply, an in-progress copy is dropped, only a zero code is stored),
+// src/kdc/kdc_util.c kdc_process_tgs_req ("Don't use a replay cache");
+// RFC 4120 3.2.3, 5.4.2 (AS-REP and TGS-REP are APPLICATION 11 and 13), 7.5.9.
 
-// resetReplay empties the replay cache between benchmark rounds.
-func resetReplay(s *Server) { s.replay = newReplayCache(s.cfg.ReplayCacheEntries) }
+// resetLookaside empties the lookaside between benchmark rounds.
+func resetLookaside(s *Server) { s.lookaside = newLookaside() }
 
 // tgsAt builds a TGS-REQ for the named client whose authenticator says ctime
 // and cusec, carrying a TGT valid around the fake clock's present.
@@ -112,176 +116,258 @@ func issued(t testing.TB, out []byte) bool {
 	return rep.Unmarshal(out) == nil
 }
 
-// RFC 4120 3.2.3: the same authenticator, a second time, is KRB_AP_ERR_REPEAT.
-func TestAReplayedAuthenticatorIsRefused(t *testing.T) {
-	clock := fakeClock(t, time.Now().Truncate(time.Second))
-	s := twoPeople(t, nil)
+// switchable is a Source an outage can be switched on and off in.
+type switchable struct {
+	people manyPeople
+	down   atomic.Bool
+	calls  atomic.Int32
+}
+
+func (s *switchable) Identities() ([]*directory.Identity, error) {
+	s.calls.Add(1)
+	if s.down.Load() {
+		return brokenSource{}.Identities()
+	}
+	return s.people, nil
+}
+func (s *switchable) Describe() string                 { return "switchable" }
+func (s *switchable) Members(string) ([]string, error) { return nil, nil }
+
+func withSwitch(t *testing.T) (*Server, *switchable) {
+	t.Helper()
+	src := &switchable{people: manyPeople{directory.NewIdentity("alice", directory.WithPassword("alicepw"))}}
+	return twoPeople(t, func(c *Config) { c.People = src }), src
+}
+
+// The reason the lookaside exists, and why it is not a replay cache: a client
+// that lost the reply sends the same bytes again and gets the same reply —
+// not KRB_AP_ERR_REPEAT, and without the request being worked a second time.
+func TestARetransmittedRequestGetsTheSameReply(t *testing.T) {
+	fakeClock(t, time.Now().Truncate(time.Second))
+	s, src := withSwitch(t)
 	req := tgsAt(t, s, "alice", now(), 5)
-	if !issued(t, s.handle(req)) {
-		t.Fatal("the first TGS-REQ was refused")
+	first := s.handle(req)
+	if !issued(t, first) {
+		t.Fatalf("the first TGS-REQ was refused, code %d", krbErrorCode(t, first))
 	}
-	if got := krbErrorCode(t, s.handle(req)); got != errorcode.KRB_AP_ERR_REPEAT {
-		t.Errorf("the same request again: code %d, want KRB_AP_ERR_REPEAT (34)", got)
+	calls := src.calls.Load()
+	// Even with the directory down: the copy is not looked at again.
+	src.down.Store(true)
+	again := s.handle(req)
+	if !bytes.Equal(again, first) {
+		t.Errorf("the retransmission got another reply (%d bytes, code %d)", len(again), krbErrorCode(t, again))
 	}
-	// Still refused near the end of the window.
-	clock.Add(int64(4 * time.Minute))
-	if got := krbErrorCode(t, s.handle(req)); got != errorcode.KRB_AP_ERR_REPEAT {
-		t.Errorf("4 minutes later: code %d, want KRB_AP_ERR_REPEAT", got)
+	if n := src.calls.Load(); n != calls {
+		t.Errorf("the retransmission read the directory %d more times, want 0", n-calls)
 	}
 }
 
-// The key is client, server, ctime, cusec: change any of the variable three
-// and it is another authenticator.
-func TestADifferentAuthenticatorIsAccepted(t *testing.T) {
+// Distinct requests are each answered on their own; nothing here refuses an
+// authenticator for having been seen.
+func TestDistinctRequestsAreEachServed(t *testing.T) {
 	fakeClock(t, time.Now().Truncate(time.Second))
 	s := twoPeople(t, nil)
 	ct := now()
 	for name, req := range map[string][]byte{
-		"base":              tgsAt(t, s, "alice", ct, 5),
-		"another cusec":     tgsAt(t, s, "alice", ct, 6),
-		"another ctime":     tgsAt(t, s, "alice", ct.Add(time.Second), 5),
-		"another client":    tgsAt(t, s, "bob", ct, 5),
-		"the earlier ctime": tgsAt(t, s, "alice", ct.Add(-time.Second), 5),
+		"base":          tgsAt(t, s, "alice", ct, 5),
+		"another cusec": tgsAt(t, s, "alice", ct, 6),
+		"another ctime": tgsAt(t, s, "alice", ct.Add(time.Second), 5),
+		"another user":  tgsAt(t, s, "bob", ct, 5),
 	} {
-		if !issued(t, s.handle(req)) {
-			t.Errorf("%s: refused, code %d", name, krbErrorCode(t, s.handle(req)))
+		if out := s.handle(req); !issued(t, out) {
+			t.Errorf("%s: refused, code %d", name, krbErrorCode(t, out))
 		}
+	}
+	if n := s.lookaside.len(); n != 4 {
+		t.Errorf("%d entries, want 4", n)
 	}
 }
 
-// Entries live for the skew window and no longer: a replay after it is
-// refused by the skew check instead, and the entry is gone.
-func TestReplayEntriesExpireAfterTheWindow(t *testing.T) {
+// A KRB-ERROR is not stored: a client told the service is unavailable that
+// retries the same bytes is served once the directory is back.
+func TestAnErrorIsNotStored(t *testing.T) {
+	fakeClock(t, time.Now().Truncate(time.Second))
+	s, src := withSwitch(t)
+	req := tgsAt(t, s, "alice", now(), 1)
+	src.down.Store(true)
+	if got := krbErrorCode(t, s.handle(req)); got != errorcode.KDC_ERR_SVC_UNAVAILABLE {
+		t.Fatalf("directory down: code %d, want KDC_ERR_SVC_UNAVAILABLE (29)", got)
+	}
+	if n := s.lookaside.len(); n != 0 {
+		t.Errorf("%d entries after an error, want 0", n)
+	}
+	src.down.Store(false)
+	if out := s.handle(req); !issued(t, out) {
+		t.Errorf("the same bytes once the directory is back: code %d, want a ticket", krbErrorCode(t, out))
+	}
+}
+
+// An entry is stale after two minutes: the same bytes then are worked again.
+func TestALookasideEntryGoesStale(t *testing.T) {
 	clock := fakeClock(t, time.Now().Truncate(time.Second))
-	s := twoPeople(t, func(c *Config) { c.MaxSkew = 2 * time.Minute })
+	s, src := withSwitch(t)
 	req := tgsAt(t, s, "alice", now(), 1)
 	if !issued(t, s.handle(req)) {
 		t.Fatal("refused")
 	}
-	if s.replay.len() != 1 {
-		t.Fatalf("%d entries, want 1", s.replay.len())
+	src.down.Store(true)
+	clock.Add(int64(lookasideStale))
+	if !issued(t, s.handle(req)) {
+		t.Error("at exactly two minutes the entry is still fresh (MIT: stale strictly after)")
 	}
-	clock.Add(int64(2*time.Minute + 2*time.Second))
-	// Outside the window the authenticator is a skew error, never accepted.
-	if got := krbErrorCode(t, s.handle(req)); got != errorcode.KRB_AP_ERR_SKEW {
-		t.Errorf("after the window: code %d, want KRB_AP_ERR_SKEW", got)
-	}
-	// Any later admission sweeps the expired entry out.
-	if !issued(t, s.handle(tgsAt(t, s, "alice", now(), 2))) {
-		t.Fatal("a fresh authenticator was refused")
-	}
-	if s.replay.len() != 1 {
-		t.Errorf("%d entries after the sweep, want 1 (the new one)", s.replay.len())
+	clock.Add(int64(time.Second))
+	// Any insertion purges what is stale; the request itself makes one.
+	if got := krbErrorCode(t, s.handle(req)); got != errorcode.KDC_ERR_SVC_UNAVAILABLE {
+		t.Errorf("past two minutes: code %d, want the request worked again (29, the directory is down)", got)
 	}
 }
 
-// The cap: a full cache refuses with SVC_UNAVAILABLE, a repeat is still a
-// repeat, and room comes back when entries expire.
-func TestReplayCacheCapRefusesWhenFull(t *testing.T) {
-	clock := fakeClock(t, time.Now().Truncate(time.Second))
-	s := twoPeople(t, func(c *Config) { c.ReplayCacheEntries = 3 })
-	ct := now()
-	var reqs [][]byte
-	for i := 0; i < 3; i++ {
-		r := tgsAt(t, s, "alice", ct, i)
-		reqs = append(reqs, r)
-		if !issued(t, s.handle(r)) {
-			t.Fatalf("request %d refused below the cap", i)
+// A copy that arrives while the original is being worked on is dropped, as
+// MIT does: the client retransmits again and by then there is a reply.
+func TestACopyDuringProcessingIsDropped(t *testing.T) {
+	c := newLookaside()
+	req := []byte("a request")
+	if _, hit := c.enter(req); hit {
+		t.Fatal("first sighting reported as a hit")
+	}
+	if rep, hit := c.enter(req); !hit || rep != nil {
+		t.Errorf("a copy during processing: hit %v, %d-byte reply; want a hit with no reply", hit, len(rep))
+	}
+	c.finish(req, []byte{0x6d, 0})
+	if rep, hit := c.enter(req); !hit || !bytes.Equal(rep, []byte{0x6d, 0}) {
+		t.Errorf("after the reply: hit %v, reply %x", hit, rep)
+	}
+}
+
+// panicky is a Source whose read panics, as a broken backend might.
+type panicky struct{}
+
+func (panicky) Identities() ([]*directory.Identity, error) { panic("backend bug") }
+func (panicky) Describe() string                           { return "panicky" }
+func (panicky) Members(string) ([]string, error)           { return nil, nil }
+
+// A request that panicked leaves no in-progress entry behind: otherwise every
+// copy of it would be dropped until the entry went stale.
+func TestAPanicLeavesNoEntry(t *testing.T) {
+	fakeClock(t, time.Now().Truncate(time.Second))
+	s := twoPeople(t, func(c *Config) { c.People = panicky{} })
+	req := tgsAt(t, s, "alice", now(), 1)
+	if out := s.handle(req); out != nil {
+		t.Fatalf("a panic produced a %d-byte reply", len(out))
+	}
+	if n := s.lookaside.len(); n != 0 {
+		t.Errorf("%d entries after a panic, want 0", n)
+	}
+}
+
+// The size bound: entries together stay under 10 MiB, the oldest go first.
+func TestLookasideStaysUnderItsSize(t *testing.T) {
+	fakeClock(t, time.Now().Truncate(time.Second))
+	c := newLookaside()
+	rep := append([]byte{0x6b}, make([]byte, 64<<10)...)
+	const n = 400 // 400 × 64 KiB = 25 MiB offered
+	for i := 0; i < n; i++ {
+		req := []byte(strings.Repeat("r", 10) + string(rune('A'+i%26)) + time.Duration(i).String())
+		c.enter(req)
+		c.finish(req, rep)
+		if c.size > lookasideMaxSize {
+			t.Fatalf("after %d: %d bytes held, the bound is %d", i, c.size, lookasideMaxSize)
 		}
 	}
-	over := tgsAt(t, s, "alice", ct, 99)
-	if got := krbErrorCode(t, s.handle(over)); got != errorcode.KDC_ERR_SVC_UNAVAILABLE {
-		t.Errorf("past the cap: code %d, want KDC_ERR_SVC_UNAVAILABLE (29)", got)
+	if c.len() >= n || c.len() == 0 {
+		t.Fatalf("%d entries held", c.len())
 	}
-	if s.replay.len() != 3 {
-		t.Errorf("%d entries, the cap is 3", s.replay.len())
-	}
-	if got := krbErrorCode(t, s.handle(reqs[0])); got != errorcode.KRB_AP_ERR_REPEAT {
-		t.Errorf("a repeat in a full cache: code %d, want KRB_AP_ERR_REPEAT", got)
-	}
-	// Room again once the window has passed.
-	clock.Add(int64(5*time.Minute + 2*time.Second))
-	if !issued(t, s.handle(tgsAt(t, s, "alice", now(), 100))) {
-		t.Error("still refused after the entries expired")
+	first := []byte(strings.Repeat("r", 10) + "A" + time.Duration(0).String())
+	if _, hit := c.enter(first); hit {
+		t.Error("the oldest entry survived the size bound")
 	}
 }
 
-// The default applies to zero and to a negative number.
-func TestReplayCacheDefaultCap(t *testing.T) {
-	for _, n := range []int{0, -1} {
-		if c := newReplayCache(n); c.max != DefaultReplayCacheEntries {
-			t.Errorf("newReplayCache(%d).max = %d", n, c.max)
+// Only an AS-REP or a TGS-REP is worth resending.
+func TestIsReply(t *testing.T) {
+	for b, want := range map[byte]bool{0x6b: true, 0x6d: true, 0x7e: false, 0x6a: false, 0x6c: false} {
+		if got := isReply([]byte{b, 0}); got != want {
+			t.Errorf("isReply(%#x) = %v", b, got)
 		}
 	}
+	if isReply(nil) {
+		t.Error("isReply(nil)")
+	}
 }
 
-// Many goroutines, a few authenticators, each accepted exactly once. Run with
-// -race.
-func TestReplayCacheIsSafeUnderConcurrency(t *testing.T) {
-	c := newReplayCache(1000)
-	at := time.Now()
-	var fresh [50]atomic.Int32
+// Many goroutines, a few requests, through handle. Run with -race. Every
+// reply is either a ticket, or nothing (a copy during processing).
+func TestLookasideUnderConcurrency(t *testing.T) {
+	fakeClock(t, time.Now().Truncate(time.Second))
+	s := twoPeople(t, nil)
+	reqs := [][]byte{tgsAt(t, s, "alice", now(), 1), tgsAt(t, s, "alice", now(), 2), tgsAt(t, s, "bob", now(), 1)}
 	var wg sync.WaitGroup
+	var bad atomic.Int32
 	for g := 0; g < 16; g++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for i := 0; i < 50; i++ {
-				k := replayKey("R", "alice", "krbtgt/R@R", at, i)
-				if c.admit(k, at.Add(time.Minute), at) == replayFresh {
-					fresh[i].Add(1)
+			for i := 0; i < 30; i++ {
+				if out := s.handle(reqs[i%len(reqs)]); out != nil && !issued(t, out) {
+					bad.Add(1)
 				}
 			}
 		}()
 	}
 	wg.Wait()
-	for i := range fresh {
-		if n := fresh[i].Load(); n != 1 {
-			t.Errorf("authenticator %d accepted %d times, want 1", i, n)
-		}
+	if n := bad.Load(); n != 0 {
+		t.Errorf("%d replies were neither a ticket nor a drop", n)
+	}
+	if n := s.lookaside.len(); n != len(reqs) {
+		t.Errorf("%d entries, want %d", n, len(reqs))
 	}
 }
 
-// The key separates what it should, and nothing else.
-func TestReplayKey(t *testing.T) {
-	at := time.Unix(1_700_000_000, 0)
-	base := replayKey("R", "alice", "krbtgt/R@R", at, 1)
-	for name, k := range map[string][32]byte{
-		"realm":  replayKey("S", "alice", "krbtgt/R@R", at, 1),
-		"client": replayKey("R", "alic", "krbtgt/R@R", at, 1),
-		"server": replayKey("R", "alice", "krbtgt/S@S", at, 1),
-		"ctime":  replayKey("R", "alice", "krbtgt/R@R", at.Add(time.Second), 1),
-		"cusec":  replayKey("R", "alice", "krbtgt/R@R", at, 2),
-		"shift":  replayKey("R", "alicekrbtgt/R@R", "", at, 1),
-	} {
-		if k == base {
-			t.Errorf("a different %s gave the same key", name)
-		}
-	}
-	if replayKey("R", "alice", "krbtgt/R@R", at, 1) != base {
-		t.Error("the key is not deterministic")
-	}
-}
-
-// A server hammered concurrently through handle: each distinct authenticator
-// is issued once and a copy is refused.
-func TestConcurrentTGSReqsAreEachIssuedOnce(t *testing.T) {
+// authnd#74: an outage of the directory is never reported as a wrong
+// password, on either path, and with a CORRECT pre-authentication too — the
+// case that would otherwise be checked.
+func TestAnOutageIsNeverAWrongPassword(t *testing.T) {
 	fakeClock(t, time.Now().Truncate(time.Second))
-	s := twoPeople(t, nil)
-	req := tgsAt(t, s, "alice", now(), 3)
-	var ok atomic.Int32
-	var wg sync.WaitGroup
-	for g := 0; g < 8; g++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if issued(t, s.handle(req)) {
-				ok.Add(1)
-			}
-		}()
+	s, src := withSwitch(t)
+	id := src.people[0]
+	key, err := s.cfg.keyFor(id)
+	if err != nil {
+		t.Fatal(err)
 	}
-	wg.Wait()
-	if ok.Load() != 1 {
-		t.Errorf("one authenticator, 8 concurrent copies: %d issued, want 1", ok.Load())
+	asOK := asReq(t, "alice", []string{"krbtgt", testRealm}, timestampPA(t, key, now()))
+	tgs := tgsAt(t, s, "alice", now(), 9)
+	src.down.Store(true)
+	for name, req := range map[string][]byte{"AS-REQ, right password": asOK, "TGS-REQ": tgs} {
+		if got := krbErrorCode(t, s.handle(req)); got != errorcode.KDC_ERR_SVC_UNAVAILABLE {
+			t.Errorf("%s, directory down: code %d, want KDC_ERR_SVC_UNAVAILABLE (29), never PREAUTH_FAILED (24)", name, got)
+		}
+	}
+	// And the same bytes once it is back are what they always were.
+	src.down.Store(false)
+	var rep messages.ASRep
+	if err := rep.Unmarshal(s.handle(asOK)); err != nil {
+		t.Errorf("AS-REQ once the directory is back: %v", err)
+	}
+}
+
+// authnd#74, the other half: an upstream `ldap` source gives Verifiers — a bind
+// against somebody else's directory. Kerberos cannot use one, so the KDC
+// never asks the upstream to check a password: the verifier is not called, and
+// the answer is KDC_ERR_NULL_KEY, a configuration to fix, not a wrong password.
+func TestAVerifierIsNeverAskedByKerberos(t *testing.T) {
+	var asked atomic.Int32
+	id := directory.NewIdentity("alice", directory.WithVerifier(func(string) error {
+		asked.Add(1)
+		return errors.New("the upstream directory is unreachable")
+	}))
+	s := testServer(t, id)
+	pa := timestampPA(t, types.EncryptionKey{KeyType: defaultEtype, KeyValue: make([]byte, 32)}, time.Now())
+	for name, p := range map[string]types.PADataSequence{"without preauth": nil, "with preauth": pa} {
+		if got := errorCode(t, s.handle(asReq(t, "alice", []string{"krbtgt", testRealm}, p))); got != errorcode.KDC_ERR_NULL_KEY {
+			t.Errorf("%s: code %d, want KDC_ERR_NULL_KEY (9)", name, got)
+		}
+	}
+	if n := asked.Load(); n != 0 {
+		t.Errorf("the upstream was asked %d times", n)
 	}
 }

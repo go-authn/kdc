@@ -1,112 +1,160 @@
 package kdc
 
 import (
-	"crypto/sha256"
-	"encoding/binary"
 	"sync"
 	"time"
 )
 
-// The replay cache of the ticket-granting service.
+// The lookaside cache: a request that arrives again, byte for byte, is
+// answered with the reply it already had.
 //
-// RFC 4120 3.2.3 (the server's side of an AP-REQ) says an authenticator is
-// good once: the server keeps the authenticators it has accepted for as long
-// as the clock-skew window lets one be accepted, and refuses a second copy
-// with KRB_AP_ERR_REPEAT (34). 3.3.2 makes the PA-TGS-REQ of a TGS-REQ an
-// AP-REQ, so the KDC is the server whose cache this is. MIT keeps it in
-// lib/krb5/rcache (the "dfl" cache): an entry is the client, the server, the
-// authenticator's ctime and its cusec, and an entry older than the skew is
-// forgotten.
+// It is MIT's (krb5 src/kdc/replay.c, used by src/kdc/dispatch.c), ported:
+// the key is the whole request packet; a hit resends the stored reply; a
+// request still being worked on when its copy arrives is recorded with no
+// reply and the copy is dropped; only a reply that is not a KRB-ERROR is
+// stored; an entry is stale two minutes after it went in; the entries together
+// are held under 10 MiB, the oldest discarded first.
 //
-// ⛔ What is bounded, and what is not. The cache holds at most
-// [Config.ReplayCacheEntries] entries of 40 bytes each (a SHA-256 of the
-// identity and an expiry), plus the map's own overhead: a few megabytes at the
-// default, never more. Only a request whose authenticator already decrypted
-// under the TGT's session key, carries a valid checksum over the request and
-// is inside the skew reaches it, so it is filled by holders of a TGT, not by
-// anybody on the network. When it is full of entries that have not expired,
-// a new authenticator is REFUSED with KDC_ERR_SVC_UNAVAILABLE (retry later),
-// never accepted unchecked and never admitted at the cost of forgetting an
-// older one: a replay cache that forgets under pressure is one an attacker
-// empties. One sweep a second drops the expired entries.
+// ⛔ It is NOT a replay cache, and must not become one. RFC 4120 3.2.3 has a
+// server remember authenticators and refuse a second copy with
+// KRB_AP_ERR_REPEAT, but MIT's KDC turns that off for the TGS on purpose
+// (src/kdc/kdc_util.c, kdc_process_tgs_req: "Don't use a replay cache"): a
+// client that lost a reply over UDP sends the SAME bytes again, and a
+// KRB_AP_ERR_REPEAT then fails a kinit or a kvno that should have worked. Nor
+// does a replayer gain anything: the reply is sealed under the TGT's session
+// key or the client's long-term key, which a replayer does not hold. What a
+// replay costs is the work of answering it, and that is what this saves.
 //
-// Not kept: the reply. MIT's lookaside (kdc/dispatch.c) answers a
-// retransmitted request with the reply it already made; this cache cannot, so
-// a client that retransmits the byte-identical request because it lost the
-// reply is refused KRB_AP_ERR_REPEAT. A client that builds a fresh
-// authenticator for each attempt is not affected.
-
-// DefaultReplayCacheEntries is [Config.ReplayCacheEntries] when it is zero:
-// 65 536 authenticators inside one skew window, which is 218 TGS-REQs a second
-// sustained over the default five minutes.
-const DefaultReplayCacheEntries = 65536
-
-// replayVerdict is what the cache says about an authenticator.
-type replayVerdict int
+// A KRB-ERROR is never stored, so a client told KDC_ERR_SVC_UNAVAILABLE that
+// retries the same bytes is served afresh once the directory is back, rather
+// than handed the outage again.
 
 const (
-	replayFresh  replayVerdict = iota // never seen: remembered now
-	replayRepeat                      // seen inside its window
-	replayFull                        // not seen, and no room to remember it
+	// lookasideMaxSize is MIT's LOOKASIDE_MAX_SIZE.
+	lookasideMaxSize = 10 << 20
+	// lookasideStale is MIT's STALE_TIME.
+	lookasideStale = 2 * time.Minute
+	// lookasideEntryOverhead stands for MIT's sizeof(struct entry): the
+	// bookkeeping around the two packets, so that empty replies still count.
+	lookasideEntryOverhead = 64
 )
 
-type replayCache struct {
-	mu        sync.Mutex
-	max       int
-	seen      map[[32]byte]int64 // key -> unix nanoseconds after which it is forgotten
-	nextSweep int64
+// lookasideEntry is one request, linked into the expiration queue by its own
+// prev and next: an entry is the only allocation a request adds besides the
+// copy of its bytes that keys the map.
+type lookasideEntry struct {
+	req        string
+	rep        []byte // nil while the request is being worked on
+	in         time.Time
+	prev, next *lookasideEntry
 }
 
-func newReplayCache(max int) *replayCache {
-	if max <= 0 {
-		max = DefaultReplayCacheEntries
-	}
-	return &replayCache{max: max}
+func (e *lookasideEntry) size() int { return lookasideEntryOverhead + len(e.req) + len(e.rep) }
+
+type lookaside struct {
+	mu         sync.Mutex
+	entries    map[string]*lookasideEntry
+	head, tail *lookasideEntry // oldest first
+	size       int
 }
 
-// replayKey is MIT's rcache key: client, server, ctime, cusec.
-func replayKey(crealm, client, server string, ctime time.Time, cusec int) [32]byte {
-	var buf [256]byte
-	b := append(buf[:0], crealm...)
-	b = append(b, 0)
-	b = append(b, client...)
-	b = append(b, 0)
-	b = append(b, server...)
-	b = append(b, 0)
-	b = binary.BigEndian.AppendUint64(b, uint64(ctime.Unix()))
-	b = binary.BigEndian.AppendUint64(b, uint64(cusec))
-	return sha256.Sum256(b)
+func newLookaside() *lookaside {
+	return &lookaside{entries: make(map[string]*lookasideEntry)}
 }
 
-// admit records the authenticator under key, to be forgotten at expires.
-func (c *replayCache) admit(key [32]byte, expires, at time.Time) replayVerdict {
-	nowNs := at.UnixNano()
+// enter is kdc_check_lookaside followed, on a miss, by the in-progress
+// kdc_insert_lookaside: one lock, so two copies arriving together cannot both
+// miss. hit says the request was seen; rep is its reply, nil if it is still
+// being worked on.
+func (c *lookaside) enter(req []byte) (rep []byte, hit bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.seen == nil {
-		c.seen = make(map[[32]byte]int64)
-	}
-	if nowNs >= c.nextSweep {
-		for k, exp := range c.seen {
-			if exp <= nowNs {
-				delete(c.seen, k)
-			}
+	if e, ok := c.entries[string(req)]; ok {
+		// ⛔ One departure from MIT, whose check does not look at the age: an
+		// entry there answers until an insertion happens to purge it, which on
+		// a quiet KDC is any time at all. Here two minutes is a bound.
+		if !now().After(e.in.Add(lookasideStale)) {
+			return e.rep, true
 		}
-		c.nextSweep = nowNs + int64(time.Second)
+		c.discard(e)
 	}
-	if exp, ok := c.seen[key]; ok && exp > nowNs {
-		return replayRepeat
+	c.insert(&lookasideEntry{req: string(req), in: now()})
+	return nil, false
+}
+
+// finish is finish_dispatch_cache: the in-progress entry goes, and the reply
+// comes in in its place if it is one worth resending. The in-progress entry
+// is reused for it, key and all — the same as MIT's remove and insert, without
+// a second copy of the request.
+func (c *lookaside) finish(req, rep []byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.entries[string(req)]
+	if ok && e.rep == nil {
+		c.discard(e)
+	} else {
+		e = nil
 	}
-	if _, ok := c.seen[key]; !ok && len(c.seen) >= c.max {
-		return replayFull
+	if !isReply(rep) {
+		return
 	}
-	c.seen[key] = expires.UnixNano()
-	return replayFresh
+	if e == nil {
+		e = &lookasideEntry{req: string(req)}
+	}
+	e.rep, e.in = rep, now()
+	c.insert(e)
+}
+
+// insert is kdc_insert_lookaside: purge from the oldest end while entries are
+// stale or the new one would not fit, then append.
+func (c *lookaside) insert(e *lookasideEntry) {
+	for old := c.head; old != nil; old = c.head {
+		if !e.in.After(old.in.Add(lookasideStale)) && c.size+e.size() <= lookasideMaxSize {
+			break
+		}
+		c.discard(old)
+	}
+	if prev, ok := c.entries[e.req]; ok {
+		c.discard(prev)
+	}
+	e.prev, e.next = c.tail, nil
+	if c.tail != nil {
+		c.tail.next = e
+	} else {
+		c.head = e
+	}
+	c.tail = e
+	c.entries[e.req] = e
+	c.size += e.size()
+}
+
+func (c *lookaside) discard(e *lookasideEntry) {
+	c.size -= e.size()
+	delete(c.entries, e.req)
+	if e.prev != nil {
+		e.prev.next = e.next
+	} else {
+		c.head = e.next
+	}
+	if e.next != nil {
+		e.next.prev = e.prev
+	} else {
+		c.tail = e.prev
+	}
+	e.prev, e.next = nil, nil
 }
 
 // len is the number of entries held, for tests.
-func (c *replayCache) len() int {
+func (c *lookaside) len() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return len(c.seen)
+	return len(c.entries)
+}
+
+// isReply says a reply is an AS-REP or a TGS-REP, the two MIT stores (it
+// stores on a zero code, and a KRB-ERROR is a non-zero one): an ASN.1
+// APPLICATION tag 11 or 13, constructed, as the first byte (RFC 4120 5.4.2).
+// KRB-ERROR is APPLICATION 30.
+func isReply(rep []byte) bool {
+	return len(rep) > 0 && (rep[0] == 0x6b || rep[0] == 0x6d)
 }

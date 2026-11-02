@@ -86,20 +86,6 @@ func (s *Server) serveTGS(req *messages.TGSReq, body []byte) []byte {
 		return s.krbErr(sname, errorcode.KRB_AP_ERR_SKEW, errClockSkew.Error(), nil)
 	}
 
-	// RFC 4120 3.2.3: an authenticator is good once. Only here, past the
-	// decryption, the checksum and the skew, so that what fills the cache is
-	// what a holder of a TGT sent.
-	switch s.replay.admit(replayKey(ap.Authenticator.CRealm, principalName(ap.Authenticator.CName),
-		principalName(krbtgt)+"@"+s.cfg.Realm, ap.Authenticator.CTime, ap.Authenticator.Cusec),
-		ap.Authenticator.CTime.Add(s.cfg.skew()), now()) {
-	case replayRepeat:
-		s.logf("kdc: authenticator of %q replayed", principalName(ap.Authenticator.CName))
-		return s.krbErr(sname, errorcode.KRB_AP_ERR_REPEAT, "the authenticator was already used", nil)
-	case replayFull:
-		s.logf("kdc: the replay cache is full (%d entries): refusing TGS-REQs until entries expire", s.replay.max)
-		return s.krbErr(sname, errorcode.KDC_ERR_SVC_UNAVAILABLE, "the replay cache is full", nil)
-	}
-
 	// ⛔ The TGT's end is the whole of how a Kerberos credential is revoked:
 	// a password change or a removed person stops mattering only when the
 	// TGTs already handed out run out. Its times were written by THIS clock,

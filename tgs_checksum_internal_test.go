@@ -1,7 +1,6 @@
 package kdc
 
 import (
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,10 +15,6 @@ import (
 	"github.com/jcmturner/gokrb5/v8/types"
 )
 
-// nextCusec makes each authenticator these tests build a different one, as a
-// client's microsecond counter does: the replay cache refuses a second copy.
-var nextCusec atomic.Int64
-
 // signedTGSReq is a TGS-REQ as a client builds one: the body encoded once,
 // the authenticator's checksum computed by cksum over those bytes, and the
 // same bytes sent.
@@ -30,8 +25,7 @@ func signedTGSReq(t testing.TB, tkt messages.Ticket, sk types.EncryptionKey, cli
 	if err != nil {
 		t.Fatal(err)
 	}
-	auth := types.Authenticator{AVNO: iana.PVNO, CRealm: testRealm, CName: client, CTime: now().UTC(),
-		Cusec: int(nextCusec.Add(1) % 1_000_000), SeqNumber: 1}
+	auth := types.Authenticator{AVNO: iana.PVNO, CRealm: testRealm, CName: client, CTime: now().UTC(), SeqNumber: 1}
 	if cksum != nil {
 		auth.Cksum = cksum(bb)
 	}

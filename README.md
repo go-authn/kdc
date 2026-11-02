@@ -87,8 +87,19 @@ A TGS-REQ buys a ticket only when all of this holds (RFC 4120 §3.3.2):
   under the person's key. Only aes256-cts-hmac-sha1-96 is issued; RC4 and DES
   are never.
 
-Known and open: there is no replay cache or lookaside for requests (MIT keeps
-one, `kdc_check_lookaside`); a replay inside the skew window is answered again.
+- A request that arrives again **byte for byte** (a client that lost the reply
+  over UDP, or a replayer) is answered with the reply it already had, without
+  being worked again: MIT's lookaside (`src/kdc/replay.c`), ported. Entries
+  last two minutes and are held under 10 MiB together; a `KRB-ERROR` is never
+  stored, so a client told `KDC_ERR_SVC_UNAVAILABLE` is served afresh once the
+  directory is back. There is deliberately **no authenticator replay cache**:
+  MIT turns it off at the TGS (`kdc_util.c`, "Don't use a replay cache"),
+  because a retransmission would then fail with `KRB_AP_ERR_REPEAT`, and a
+  replayer cannot open a reply sealed under a key they do not hold.
+- A directory that cannot be read is `KDC_ERR_SVC_UNAVAILABLE` on both the AS
+  and the TGS, also for a correct password — never `PREAUTH_FAILED`, so it
+  cannot count against a lockout. A source of Verifiers (an `ldap` upstream
+  bind) is never asked by Kerberos: it is `KDC_ERR_NULL_KEY`.
 
 ## How long a ticket lives
 

@@ -19,7 +19,7 @@ import (
 
 // BenchmarkTGSReq is one valid TGS-REQ end to end. 1024 distinct requests (one
 // authenticator each, cusec 0..1023) are built up front and served in turn;
-// the replay cache, when there is one, is emptied before each round so that
+// the lookaside, when there is one, is emptied before each round so that
 // every request is a first sighting, and its growth from empty is part of the
 // figure.
 func BenchmarkTGSReq(b *testing.B) {
@@ -67,7 +67,7 @@ func BenchmarkTGSReq(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if i%n == 0 {
-			resetReplay(s)
+			resetLookaside(s)
 		}
 		if out := s.handle(reqs[i%n]); len(out) == 0 {
 			b.Fatal("no reply")
