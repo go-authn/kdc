@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.6.0
+
+- Added: `Finder`. When `Config.People` implements
+  `Find(name) (*directory.Identity, bool, error)`, a request asks it instead of
+  walking `Identities()` (#31). The returned identity's name must equal the
+  principal exactly, or it is an unknown principal; an error is
+  `KDC_ERR_SVC_UNAVAILABLE`. Measured with 10,000 people (CPU profile, shares,
+  load 13): the walk was 0.79 s of 1.59 s in `handle`; with a `Finder` the
+  lookup is below the profile's threshold and `handle` is 0.36 s, 0.27 s of it
+  gokrb5's ASN.1 encoding. Allocations unchanged (510; the walk allocated
+  nothing). Times not compared: the machine was loaded.
+- Added: `BenchmarkASNoPreauthFinder`.
+
 ## v0.5.0
 
 - Added: the lookaside of MIT's KDC (`src/kdc/replay.c`). A request seen

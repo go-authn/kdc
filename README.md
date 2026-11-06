@@ -37,6 +37,24 @@ password gets, so it reads as a configuration to fix rather than a password to
 retype. What `New` does refuse up front is a realm with no name, no directory,
 no keytab, or a keytab without `krbtgt/REALM`.
 
+## Finding a person: give it an index
+
+Every AS-REQ and TGS-REQ looks one person up. With a plain `directory.Source`
+that is `Identities()` and a walk: with 10,000 people the walk was **half of an
+AS-REQ's CPU** (#31), and a source that reads a database or an LDAP server on
+`Identities()` is read in full by every request — **including an
+unauthenticated one**. A source that keeps an index implements `kdc.Finder`:
+
+```go
+Find(name string) (*directory.Identity, bool, error)
+```
+
+and the realm asks it instead. The name must match **exactly** (a principal is
+case-sensitive; an identity whose `Name()` differs is not believed), and an
+error is answered `KDC_ERR_SVC_UNAVAILABLE`. authnd hands the realm its
+refreshed snapshot this way, so the database is read on the refresh interval,
+not per request.
+
 ## What it implements
 
 AS-REQ and TGS-REQ, over UDP and TCP, with encrypted-timestamp
