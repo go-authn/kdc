@@ -4,6 +4,7 @@ import (
 	"crypto/md5"
 	"crypto/subtle"
 	"errors"
+	"slices"
 
 	"github.com/jcmturner/gokrb5/v8/crypto"
 	"github.com/jcmturner/gokrb5/v8/iana/chksumtype"
@@ -78,6 +79,17 @@ func (s *Server) serveTGS(req *messages.TGSReq, body []byte) []byte {
 		return s.krbErr(sname, errorcode.KRB_AP_ERR_BAD_INTEGRITY,
 			"the authenticator does not decrypt under the ticket's session key", nil)
 	}
+	// ⛔ RFC 4120 3.2.3 (a TGS-REQ's PA-TGS-REQ is an AP-REQ): "The name and
+	// realm of the client from the ticket are compared against the same fields
+	// in the authenticator. If they don't match, the KRB_AP_ERR_BADMATCH error
+	// is returned; normally this is caused by a client error or an attempted
+	// attack." MIT does it in rd_req_dec.c (krb5_principal_compare of the
+	// authenticator's client with the ticket's). Before this the authenticator's
+	// name was decrypted and never read.
+	if !sameClient(ap.Ticket.DecryptedEncPart.CName, ap.Ticket.DecryptedEncPart.CRealm,
+		ap.Authenticator.CName, ap.Authenticator.CRealm) {
+		return s.krbErr(sname, errorcode.KRB_AP_ERR_BADMATCH, "the authenticator names another client than the ticket", nil)
+	}
 	// ⛔ And the authenticator must be about THIS request. RFC 4120 3.3.2:
 	// its checksum is over the KDC-REQ-BODY, keyed with the session key.
 	// Unchecked, the body was bound to nothing -- the service, the lifetime
@@ -138,6 +150,13 @@ func (s *Server) serveTGS(req *messages.TGSReq, body []byte) []byte {
 		return s.krbErr(sname, errorcode.KDC_ERR_SVC_UNAVAILABLE, err.Error(), nil)
 	}
 	return rep
+}
+
+// sameClient compares two client principals as MIT's krb5_principal_compare
+// does: the realm and every name component, byte for byte; the name TYPE is
+// not compared.
+func sameClient(a types.PrincipalName, ar string, b types.PrincipalName, br string) bool {
+	return ar == br && slices.Equal(a.NameString, b.NameString)
 }
 
 // checkCipher refuses an EncryptedData too short to be one.
