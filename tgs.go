@@ -1,8 +1,12 @@
 package kdc
 
 import (
+	"crypto/md5"
+	"crypto/subtle"
 	"errors"
+
 	"github.com/jcmturner/gokrb5/v8/crypto"
+	"github.com/jcmturner/gokrb5/v8/iana/chksumtype"
 	"github.com/jcmturner/gokrb5/v8/iana/errorcode"
 	"github.com/jcmturner/gokrb5/v8/iana/flags"
 	"github.com/jcmturner/gokrb5/v8/iana/keyusage"
@@ -126,7 +130,7 @@ func (s *Server) serveTGS(req *messages.TGSReq, body []byte) []byte {
 		}
 		return s.krbErr(sname, errorcode.KDC_ERR_C_PRINCIPAL_UNKNOWN, "this realm does not know that client", nil)
 	}
-	rep, err := s.issue(req.ReqBody, name[0], sname, session, keyusage.TGS_REP_ENCPART_SESSION_KEY, msgtype.KRB_TGS_REP, tgt.EndTime)
+	rep, err := s.issue(req.ReqBody, name[0], sname, session, keyusage.TGS_REP_ENCPART_SESSION_KEY, msgtype.KRB_TGS_REP, tgt.EndTime, &tgt)
 	if err != nil {
 		if errors.Is(err, errNeverValid) {
 			return s.krbErr(sname, errorcode.KDC_ERR_NEVER_VALID, err.Error(), nil)
@@ -157,12 +161,37 @@ func checkCipher(ed types.EncryptedData) error {
 // request body, under this session key. Zero is yes; otherwise the code and
 // the reason to refuse with.
 //
-// The checksum must be the session key's own keyed one, the type a client
-// gets by asking for "the default for this key" (RFC 3961 4: every enctype
-// names a mandatory checksum, and MIT's and Heimdal's clients use it here).
-// An unkeyed checksum such as a CRC or a bare hash is refused before it is
-// looked at: anybody can recompute one over a body they rewrote, which is
-// why RFC 4120 3.3.2 requires a collision-proof keyed checksum.
+// Two types are accepted. The session key's own keyed checksum, the type a
+// client gets by asking for "the default for this key" (RFC 3961 4: every
+// enctype names a mandatory checksum; MIT's and Heimdal's clients use it), and
+// RSA-MD5 (cksumtype 7), which Windows sends (MS-KILE).
+//
+// Why RSA-MD5 is acceptable HERE and nowhere else. RFC 4120 3.3.2 (the KDC
+// "MUST" reject a checksum "not collision-proof", KRB_AP_ERR_INAPP_CKSUM) and
+// 5.2.7.1 ("MUST be collision-proof") do not ask for it to be keyed.
+// RFC 3961 6.1 allows unkeyed checksums "preferably as part of an encrypted
+// message", with this very case as its footnote [6]: "in MIT's implementation
+// of [Kerb1510], the rsa-md5 unkeyed checksum of application data may be
+// included in an authenticator encrypted in a service's key"; 6.1.1 gives
+// rsa-md5 (type 7) "associated cryptosystem: any". MIT krb5 enforces exactly
+// the RFC 4120 rule: kdc_util.c comp_cksum refuses a type
+// that fails krb5_c_is_coll_proof_cksum, and then verifies with
+// krb5_c_verify_checksum under the TGT session key; its table
+// (lib/crypto/krb/cksumtypes.c) lists RSA-MD5 as CKSUM_UNKEYED and not as
+// CKSUM_NOT_COLL_PROOF, so MIT accepts it, as it does the other unkeyed
+// hashes. The exposure of an unkeyed checksum is that a path attacker can
+// recompute it over a body they rewrote; but here it sits INSIDE the
+// authenticator, which is encrypted under the TGT session key with an
+// integrity-protected enctype (every enctype this KDC issues carries an HMAC
+// over its plaintext), and we decrypted it before arriving here. Whoever
+// can rewrite the body AND re-seal the authenticator already holds the
+// session key. What remains is a second preimage on MD5 against a body the
+// attacker did not choose, which is not known to be feasible, and the
+// authenticator is also bound by the replay cache.
+//
+// Deliberately narrower than MIT: CRC32, RSA-MD4 and SHA-1 (which MIT also
+// lets through) stay refused, no client of ours sends them, and CRC32 is not
+// collision-proof at all.
 func checkBodyChecksum(c types.Checksum, session types.EncryptionKey, body []byte) (int32, string) {
 	et, err := crypto.GetEtype(session.KeyType)
 	if err != nil {
@@ -171,8 +200,18 @@ func checkBodyChecksum(c types.Checksum, session types.EncryptionKey, body []byt
 	if len(c.Checksum) == 0 {
 		return errorcode.KRB_AP_ERR_INAPP_CKSUM, "the authenticator carries no checksum over the request"
 	}
+	if c.CksumType == chksumtype.RSA_MD5 {
+		// Windows' form (MS-KILE; observed with a Windows 11 client against
+		// this KDC, go-authn/kdc#36). See the doc comment: this is MIT's
+		// rule, narrowed to the one unkeyed type a client sends.
+		sum := md5.Sum(body) //nolint:gosec // RFC 4120 type 7; the authenticator is sealed, see above
+		if len(body) == 0 || subtle.ConstantTimeCompare(sum[:], c.Checksum) != 1 {
+			return errorcode.KRB_AP_ERR_MODIFIED, "the authenticator's checksum is not over this request"
+		}
+		return 0, ""
+	}
 	if c.CksumType != et.GetHashID() {
-		return errorcode.KRB_AP_ERR_INAPP_CKSUM, "the authenticator's checksum is not the session key's keyed checksum"
+		return errorcode.KRB_AP_ERR_INAPP_CKSUM, "the authenticator's checksum is neither the session key's keyed checksum nor RSA-MD5"
 	}
 	if len(body) == 0 || !et.VerifyChecksum(session.KeyValue, body, c.Checksum, keyusage.TGS_REQ_PA_TGS_REQ_AP_REQ_AUTHENTICATOR_CHKSUM) {
 		return errorcode.KRB_AP_ERR_MODIFIED, "the authenticator's checksum is not over this request"

@@ -10,6 +10,7 @@ import (
 	"github.com/jcmturner/gokrb5/v8/iana"
 	"github.com/jcmturner/gokrb5/v8/iana/asnAppTag"
 	"github.com/jcmturner/gokrb5/v8/iana/errorcode"
+	"github.com/jcmturner/gokrb5/v8/iana/flags"
 	"github.com/jcmturner/gokrb5/v8/iana/keyusage"
 	"github.com/jcmturner/gokrb5/v8/iana/msgtype"
 	"github.com/jcmturner/gokrb5/v8/iana/patype"
@@ -68,7 +69,7 @@ func (s *Server) serveAS(req *messages.ASReq) []byte {
 			"this realm issues only krbtgt tickets from an AS-REQ", nil)
 	}
 
-	rep, err := s.issue(req.ReqBody, id.Name(), sname, key, keyusage.AS_REP_ENCPART, msgtype.KRB_AS_REP, time.Time{})
+	rep, err := s.issue(req.ReqBody, id.Name(), sname, key, keyusage.AS_REP_ENCPART, msgtype.KRB_AS_REP, time.Time{}, nil)
 	if err != nil {
 		if errors.Is(err, errNeverValid) {
 			return s.krbErr(sname, errorcode.KDC_ERR_NEVER_VALID, err.Error(), nil)
@@ -152,9 +153,29 @@ func (s *Server) checkTimestamp(raw []byte, key types.EncryptionKey) error {
 
 // issue builds a ticket and the reply that carries it.
 func (s *Server) issue(body messages.KDCReqBody, cname string, sname types.PrincipalName,
-	replyKey types.EncryptionKey, usage uint32, mt int, notAfter time.Time) ([]byte, error) {
+	replyKey types.EncryptionKey, usage uint32, mt int, notAfter time.Time, header *messages.EncTicketPart) ([]byte, error) {
 
 	start := now().UTC()
+	// RFC 4120 2.1 / 3.1.3 / 3.3.3, MIT get_ticket_flags (kdc_util.c): a ticket
+	// from the AS is INITIAL, and PRE-AUTHENT because the AS-REQ proved the
+	// key (checkTimestamp ran); a ticket from the TGS is never INITIAL and
+	// inherits PRE-AUTHENT and HW-AUTHENT from the TGT it was bought with
+	// (MIT COPY_TKT_FLAGS), and keeps the TGT's authtime. Nothing else is
+	// granted: no FORWARDABLE, PROXIABLE or RENEWABLE, since the KDC does not
+	// implement those requests.
+	tflags := types.NewKrbFlags()
+	authTime := start
+	if header == nil {
+		types.SetFlag(&tflags, flags.Initial)
+		types.SetFlag(&tflags, flags.PreAuthent)
+	} else {
+		for _, f := range []int{flags.PreAuthent, flags.HWAuthent} {
+			if types.IsFlagSet(&header.Flags, f) {
+				types.SetFlag(&tflags, f)
+			}
+		}
+		authTime = header.AuthTime.UTC()
+	}
 	end := start.Add(s.cfg.lifetime())
 	if !tillUnbounded(body.Till) && body.Till.Before(end) {
 		// A client may ask for less. Giving it more than it asked for would
@@ -184,19 +205,21 @@ func (s *Server) issue(body messages.KDCReqBody, cname string, sname types.Princ
 		return nil, err
 	}
 	tkt, sessionKey, err := messages.NewTicket(client, s.cfg.Realm, sname, s.cfg.Realm,
-		types.NewKrbFlags(), s.cfg.Services, defaultEtype, kvno, start, start, end, time.Time{})
+		tflags, s.cfg.Services, defaultEtype, kvno, authTime, start, end, time.Time{})
 	if err != nil {
 		return nil, err
 	}
 
 	enc := messages.EncKDCRepPart{
-		Key:      sessionKey,
-		Nonce:    body.Nonce,
-		AuthTime: start,
-		EndTime:  end,
-		SRealm:   s.cfg.Realm,
-		SName:    sname,
-		LastReqs: []messages.LastReq{{LRType: 0, LRValue: start}},
+		Key:       sessionKey,
+		Nonce:     body.Nonce,
+		Flags:     tflags,
+		AuthTime:  authTime,
+		StartTime: start,
+		EndTime:   end,
+		SRealm:    s.cfg.Realm,
+		SName:     sname,
+		LastReqs:  []messages.LastReq{{LRType: 0, LRValue: start}},
 	}
 	tag := asnAppTag.EncASRepPart
 	if mt == msgtype.KRB_TGS_REP {
