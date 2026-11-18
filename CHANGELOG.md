@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Added: `Server.Mint`, `Server.MintHandler` and `Config.MintCallers`: a TGT
+  for a person with no key, asked for by an allowlisted caller over mutually
+  authenticated TLS, returned as a KRB-CRED (RFC 4120 5.8). Off by default.
+
 - Fixed: a Windows client's TGS-REQ is accepted. Its authenticator checksum is
   RSA-MD5 (type 7), unkeyed but sealed under the session key; MIT krb5 accepts
   it. CRC32, MD4 and SHA-1 stay refused; a body altered after signing is

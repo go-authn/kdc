@@ -96,6 +96,19 @@ Issued tickets carry the flags RFC 4120 gives them: an AS ticket is `INITIAL`
 and `PRE-AUTHENT`; a TGS ticket is not `INITIAL`, inherits `PRE-AUTHENT` and the
 TGT's authtime; both carry a starttime.
 
+## A TGT for a person with no key: minting
+
+A person who logs in with a passkey has no password, so an AS-REQ for them is
+`KDC_ERR_NULL_KEY`. `Config.MintCallers` (default empty: off) names the callers,
+by the URI name of their TLS client certificate, who may ask `Server.MintHandler`
+for a TGT for a principal they have just authenticated. The reply is a KRB-CRED
+(RFC 4120 5.8) with a fresh session key, `INITIAL | PRE-AUTHENT`, never
+renewable, at most ten hours (`MaxMintLifetime`, and `Config.Lifetime` if
+lower). The principal must exist in the directory. Serve the handler only on a
+listener with `tls.RequireAndVerifyClientCert`; a connection without a verified
+chain mints nothing. The reply carries the session key in the clear, so the
+transport is the encryption.
+
 ## What an unauthenticated peer can and cannot do (v0.4.5 audit)
 
 - A request for **another realm** is `KDC_ERR_WRONG_REALM`, for both AS and

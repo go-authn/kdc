@@ -37,6 +37,12 @@ type Config struct {
 	// five minutes, which is what every Kerberos implementation assumes.
 	MaxSkew time.Duration
 
+	// MintCallers lists who may ask [Server.MintHandler] for a TGT on behalf of
+	// a person they authenticated elsewhere (a passkey login at bridge): the
+	// URI subjectAltNames of their TLS client certificates, matched exactly,
+	// e.g. "https://login.example.org". Empty, the default, disables minting.
+	MintCallers []string
+
 	// Logf, when set, is told why a request was refused.
 	//
 	// It exists because the protocol cannot say: a client is given an error
