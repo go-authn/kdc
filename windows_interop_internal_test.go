@@ -17,6 +17,12 @@ import (
 	"github.com/jcmturner/gokrb5/v8/types"
 )
 
+// windowsChecksum is the authenticator checksum a Windows client sends.
+func windowsChecksum(b []byte) types.Checksum {
+	sum := md5.Sum(b)
+	return types.Checksum{CksumType: chksumtype.RSA_MD5, Checksum: sum[:]}
+}
+
 // go-authn/kdc#36, part 1. A Windows client (a workgroup Windows 11, injected
 // with a TGT) signs the TGS-REQ authenticator with RSA-MD5, cksumtype 7:
 // unkeyed, but inside the authenticator sealed under the TGT session key. MIT
