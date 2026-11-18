@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Fixed: a Windows client's TGS-REQ is accepted. Its authenticator checksum is
+  RSA-MD5 (type 7), unkeyed but sealed under the session key; MIT krb5 accepts
+  it. CRC32, MD4 and SHA-1 stay refused; a body altered after signing is
+  `KRB_AP_ERR_MODIFIED`.
+- Fixed: tickets and reply parts carry flags and a starttime. AS: `INITIAL |
+  PRE-AUTHENT`; TGS: `PRE-AUTHENT` inherited, no `INITIAL`, authtime of the
+  TGT.
+
 ## v0.6.0
 
 - Added: `Finder`. When `Config.People` implements

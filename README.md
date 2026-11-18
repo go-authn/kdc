@@ -81,8 +81,15 @@ A TGS-REQ buys a ticket only when all of this holds (RFC 4120 §3.3.2):
 - the authenticator decrypts under the session key inside it, within
   `MaxSkew` of this clock;
 - the authenticator's **checksum is over this request's body**, as the bytes
-  arrived, with the session key's own keyed checksum. A missing or unkeyed
-  checksum is `KRB_AP_ERR_INAPP_CKSUM`, and a wrong one `KRB_AP_ERR_MODIFIED`.
+  arrived, with the session key's own keyed checksum, or with RSA-MD5
+  (cksumtype 7), the unkeyed form Windows sends: it sits inside the
+  authenticator, which is sealed under the session key, and MIT krb5 accepts
+  it (`comp_cksum` asks for a collision-proof checksum, not a keyed one).
+  Any other checksum type, or none, is `KRB_AP_ERR_INAPP_CKSUM`, and a wrong
+  one `KRB_AP_ERR_MODIFIED`.
+- issued tickets carry the flags RFC 4120 gives them: an AS ticket is
+  `INITIAL` and `PRE-AUTHENT`; a TGS ticket is not `INITIAL`, inherits
+  `PRE-AUTHENT` and the TGT's authtime; both carry a starttime.
   Versions up to v0.3.2 never read it, so anybody on the path could rewrite the
   service, lifetime or nonce of a request in flight;
 - the client is of this realm and still in the directory
