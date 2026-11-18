@@ -21,11 +21,19 @@ import (
 func signedTGSReq(t testing.TB, tkt messages.Ticket, sk types.EncryptionKey, client types.PrincipalName,
 	body messages.KDCReqBody, cksum func([]byte) types.Checksum) []byte {
 	t.Helper()
+	return signedTGSReqAs(t, tkt, sk, client, testRealm, body, cksum)
+}
+
+// signedTGSReqAs is signedTGSReq with the client the AUTHENTICATOR names given
+// apart from the ticket's.
+func signedTGSReqAs(t testing.TB, tkt messages.Ticket, sk types.EncryptionKey, client types.PrincipalName, realm string,
+	body messages.KDCReqBody, cksum func([]byte) types.Checksum) []byte {
+	t.Helper()
 	bb, err := body.Marshal()
 	if err != nil {
 		t.Fatal(err)
 	}
-	auth := types.Authenticator{AVNO: iana.PVNO, CRealm: testRealm, CName: client, CTime: now().UTC(), SeqNumber: 1}
+	auth := types.Authenticator{AVNO: iana.PVNO, CRealm: realm, CName: client, CTime: now().UTC(), SeqNumber: 1}
 	if cksum != nil {
 		auth.Cksum = cksum(bb)
 	}
