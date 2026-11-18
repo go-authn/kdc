@@ -86,14 +86,15 @@ A TGS-REQ buys a ticket only when all of this holds (RFC 4120 §3.3.2):
   authenticator, which is sealed under the session key, and MIT krb5 accepts
   it (`comp_cksum` asks for a collision-proof checksum, not a keyed one).
   Any other checksum type, or none, is `KRB_AP_ERR_INAPP_CKSUM`, and a wrong
-  one `KRB_AP_ERR_MODIFIED`.
-- issued tickets carry the flags RFC 4120 gives them: an AS ticket is
-  `INITIAL` and `PRE-AUTHENT`; a TGS ticket is not `INITIAL`, inherits
-  `PRE-AUTHENT` and the TGT's authtime; both carry a starttime.
-  Versions up to v0.3.2 never read it, so anybody on the path could rewrite the
-  service, lifetime or nonce of a request in flight;
+  one `KRB_AP_ERR_MODIFIED`. Versions up to v0.3.2 never read it, so anybody
+  on the path could rewrite the service, lifetime or nonce of a request in
+  flight;
 - the client is of this realm and still in the directory
   (`KDC_ERR_C_PRINCIPAL_UNKNOWN` otherwise).
+
+Issued tickets carry the flags RFC 4120 gives them: an AS ticket is `INITIAL`
+and `PRE-AUTHENT`; a TGS ticket is not `INITIAL`, inherits `PRE-AUTHENT` and the
+TGT's authtime; both carry a starttime.
 
 ## What an unauthenticated peer can and cannot do (v0.4.5 audit)
 

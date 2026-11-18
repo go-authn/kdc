@@ -166,9 +166,15 @@ func checkCipher(ed types.EncryptedData) error {
 // enctype names a mandatory checksum; MIT's and Heimdal's clients use it), and
 // RSA-MD5 (cksumtype 7), which Windows sends (MS-KILE).
 //
-// Why RSA-MD5 is acceptable HERE and nowhere else. RFC 4120 3.3.2 and 5.5.1
-// ask the checksum to be "collision-proof"; it does not ask for it to be
-// keyed. MIT krb5 enforces exactly that: kdc_util.c comp_cksum refuses a type
+// Why RSA-MD5 is acceptable HERE and nowhere else. RFC 4120 3.3.2 (the KDC
+// "MUST" reject a checksum "not collision-proof", KRB_AP_ERR_INAPP_CKSUM) and
+// 5.2.7.1 ("MUST be collision-proof") do not ask for it to be keyed.
+// RFC 3961 6.1 allows unkeyed checksums "preferably as part of an encrypted
+// message", with this very case as its footnote [6]: "in MIT's implementation
+// of [Kerb1510], the rsa-md5 unkeyed checksum of application data may be
+// included in an authenticator encrypted in a service's key"; 6.1.1 gives
+// rsa-md5 (type 7) "associated cryptosystem: any". MIT krb5 enforces exactly
+// the RFC 4120 rule: kdc_util.c comp_cksum refuses a type
 // that fails krb5_c_is_coll_proof_cksum, and then verifies with
 // krb5_c_verify_checksum under the TGT session key; its table
 // (lib/crypto/krb/cksumtypes.c) lists RSA-MD5 as CKSUM_UNKEYED and not as
@@ -176,8 +182,8 @@ func checkCipher(ed types.EncryptedData) error {
 // hashes. The exposure of an unkeyed checksum is that a path attacker can
 // recompute it over a body they rewrote; but here it sits INSIDE the
 // authenticator, which is encrypted under the TGT session key with an
-// integrity-protected enctype (RFC 3961 5.3, 5.4 aes-cts-hmac-sha1-96, and
-// RFC 4757 for rc4-hmac), and we decrypted it before arriving here. Whoever
+// integrity-protected enctype (every enctype this KDC issues carries an HMAC
+// over its plaintext), and we decrypted it before arriving here. Whoever
 // can rewrite the body AND re-seal the authenticator already holds the
 // session key. What remains is a second preimage on MD5 against a body the
 // attacker did not choose, which is not known to be feasible, and the
