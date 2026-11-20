@@ -148,18 +148,33 @@ func TestLogsDoNotCarryRawControlCharacters(t *testing.T) {
 // malformed makes gokrb5 v8.4.4 (messages.unmarshalTicketsSequence, indexing
 // the length header of a one-byte value) panic. It runs in the serving
 // goroutine, before any authentication: one datagram killed the process.
+// v0.4.5 recovered from it; since go-authn/kdc#28 the request is dropped
+// before it reaches the decoder at all, and the recover stays for panics
+// nobody has found yet (TestAPanicLeavesNoEntry exercises it).
 func TestADecoderPanicCostsOneRequest(t *testing.T) {
 	s := testServer(t, directory.NewIdentity("alice", directory.WithPassword("alicepw")))
-	var recovered bool
-	s.cfg.Logf = func(f string, a ...any) { recovered = recovered || strings.Contains(f, "panicked") }
-	req := []byte("j\x81\xd20\x81ϡ\x03\x02\x01\x05\xa2\x03\x02\x01\n\xa3T0R0P\xa1\x03\x02\x01\x02\xa2\x0f\x04G0E\xa0\x03\x02\x01\x12\xa2>\x04< -\x81\x05G\t|\xcbW\xb0\x1eJ\xa6\xf0ͬOն\xfc\xb4$\x10*\xdc\xf7\x0e\x10\x04\x8c\a\xac\x89\x97A\x14Q{\xb7\x8110\xbb\x9e\xf6\xe4\xbf\xca\xfd\x94e\xa4b\xb7\xb8S\xb5\xa0⁤m0k\xa0\a\x03\x05\x00\x00\x01\x00\x00\xa1\x120\x10\xa0\x03\x02\x01\x00\xa1\t0\a\x1b\x05alice\xa2\f\x1b\nFLEET.TEST\xa3\x1f0\x1d\xa0\x03\x02\x01\x02\xa1\x160\x14\x1b\x06krbtgt\x1b\nFLEET.TEST\xa5\x11\x18\x0f20261101093655Z\xa7\x03\x02\x01*\xa8\x050\x00\x02\x01\xfa")
+	var recovered, dropped bool
+	s.cfg.Logf = func(f string, a ...any) {
+		recovered = recovered || strings.Contains(f, "panicked")
+		dropped = dropped || strings.Contains(f, "dropped before decoding")
+	}
+	req := fuzzPanicInput
+	if !gokrb5Panics(req) {
+		t.Fatal("gokrb5 no longer panics on the regression input: the input needs refreshing, or gokrb5 was fixed and the guard can be reconsidered")
+	}
 	if out := s.handle(req); len(out) != 0 {
 		t.Errorf("answered a request the decoder cannot read, with %d bytes", len(out))
 	}
-	if !recovered {
-		t.Error("the request no longer reaches the panicking decoder: the regression input needs refreshing")
+	if recovered {
+		t.Error("the request reached the decoder and panicked it: the guard let it through")
+	}
+	if !dropped {
+		t.Error("the request was not dropped by the additional-tickets guard")
 	}
 }
+
+// fuzzPanicInput is testdata/fuzz/FuzzHandle/37692917d735527d.
+var fuzzPanicInput = []byte("j\x81\xd20\x81ϡ\x03\x02\x01\x05\xa2\x03\x02\x01\n\xa3T0R0P\xa1\x03\x02\x01\x02\xa2\x0f\x04G0E\xa0\x03\x02\x01\x12\xa2>\x04< -\x81\x05G\t|\xcbW\xb0\x1eJ\xa6\xf0ͬOն\xfc\xb4$\x10*\xdc\xf7\x0e\x10\x04\x8c\a\xac\x89\x97A\x14Q{\xb7\x8110\xbb\x9e\xf6\xe4\xbf\xca\xfd\x94e\xa4b\xb7\xb8S\xb5\xa0⁤m0k\xa0\a\x03\x05\x00\x00\x01\x00\x00\xa1\x120\x10\xa0\x03\x02\x01\x00\xa1\t0\a\x1b\x05alice\xa2\f\x1b\nFLEET.TEST\xa3\x1f0\x1d\xa0\x03\x02\x01\x02\xa1\x160\x14\x1b\x06krbtgt\x1b\nFLEET.TEST\xa5\x11\x18\x0f20261101093655Z\xa7\x03\x02\x01*\xa8\x050\x00\x02\x01\xfa")
 
 // FuzzHandle feeds arbitrary datagrams to the request dispatcher: whatever
 // arrives, nothing may panic, and a reply is a KRB-ERROR or a ticket.
@@ -206,12 +221,15 @@ func FuzzHandle(f *testing.F) {
 			return
 		}
 		// handle recovers: a panic inside the third-party decoder costs one
-		// request. What the fuzzer asserts is that none ESCAPES, and that a
-		// reply, when there is one, is itself a decodable KRB-ERROR or
-		// KDC-REP.
+		// request, so none can ESCAPE. Since go-authn/kdc#28 the only one
+		// known is dropped before the decoder, so a panic that even reaches
+		// the recover is a NEW finding and fails here, rather than a log line
+		// nobody reads. A reply, when there is one, must itself be a
+		// decodable KRB-ERROR or KDC-REP.
+		panicked.Store("")
 		out := s.handle(b)
-		if p := panicked.Load(); p != nil {
-			t.Log(p) // recovered: see TestADecoderPanicCostsOneRequest
+		if p := panicked.Load().(string); p != "" {
+			t.Fatalf("a request reached the recover: %s", p)
 		}
 		if len(out) > 0 {
 			var e messages.KRBError
