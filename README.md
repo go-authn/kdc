@@ -109,6 +109,30 @@ listener with `tls.RequireAndVerifyClientCert`; a connection without a verified
 chain mints nothing. The reply carries the session key in the clear, so the
 transport is the encryption.
 
+## Kerberos over HTTPS: the KDC proxy (MS-KKDCP)
+
+`Server.KKDCPHandler` speaks [MS-KKDCP](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-kkdcp/5bcebb8d-b747-4ee5-9453-428aec1c5c38),
+the protocol of Windows' KdcProxy policy and of MIT krb5's
+`kdc = https://host/KdcProxy`, so clients reach the realm through port 443 and
+port 88 need not be open to the internet. A client POSTs a `KDC-PROXY-MESSAGE`
+([section 2.2.2](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-kkdcp/5778aff5-b182-4b97-a970-29c7f911eef2):
+`kerb-message` with its 4-octet length, `target-domain`, optional
+`dclocator-hint`); the message goes to the same dispatcher as a datagram on UDP
+88 or a message on TCP 88, and the reply comes back in the same envelope
+(`Content-Type: application/kerberos`). Put it behind a reverse proxy that
+terminates TLS (Windows requires HTTPS) on a path such as `/KdcProxy`.
+
+It answers what port 88 answers and refuses what it cannot answer: any method
+but POST is 405; a body over the bound is 413; bytes that are not exactly one
+DER `KDC-PROXY-MESSAGE`, a length prefix that disagrees with the message, a
+missing `target-domain` or a message that is no Kerberos request is 400
+([section 3.2.5.1](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-kkdcp/b5625a44-881a-4e5d-8a76-332d1a171059)
+says to drop the connection on a malformed message; a status line costs nothing
+and helps whoever debugs the client); another realm is 403. Nothing
+authenticates the caller, as on 88. `FuzzKKDCP` (corpus committed) and a test
+against MIT's own `kinit` and `kvno` over `https://` (`http_anchors`, the realm
+reachable only through the proxy) judge it.
+
 ## What an unauthenticated peer can and cannot do (v0.4.5 audit)
 
 - A request for **another realm** is `KDC_ERR_WRONG_REALM`, for both AS and
