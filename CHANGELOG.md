@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Added: `Server.KKDCPHandler`, Kerberos over HTTPS ([MS-KKDCP]): POST a
+  `KDC-PROXY-MESSAGE`, answered by the same dispatcher as UDP and TCP 88. POST
+  only (405), bounded (413), strict DER with no trailing bytes, a matching
+  length prefix and a `target-domain` (400), another realm 403. `FuzzKKDCP`,
+  and MIT `kinit`/`kvno` over `https://` as the oracle.
+
 - Security: a KDC-REQ whose additional-tickets field is not a
   `[11] SEQUENCE` (RFC 4120 5.4.1) is dropped before gokrb5 decodes it.
   gokrb5 v8.4.4 `unmarshalTicketsSequence` indexes the second byte of that
