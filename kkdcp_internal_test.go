@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/go-authn/directory"
@@ -220,6 +221,110 @@ func TestKKDCPRefusals(t *testing.T) {
 		h.ServeHTTP(rec, httptest.NewRequest(m, "/KdcProxy", bytes.NewReader(good)))
 		if rec.Code != http.StatusMethodNotAllowed || rec.Header().Get("Allow") != "POST" {
 			t.Errorf("%s: status %d, Allow %q", m, rec.Code, rec.Header().Get("Allow"))
+		}
+	}
+}
+
+// Each refusal says which one it is, so that whoever debugs a client is told
+// what was wrong and a refusal cannot pass for another with the same status.
+func TestKKDCPSaysWhyItRefused(t *testing.T) {
+	r := newKKDCPRealm(t)
+	h := r.s.KKDCPHandler()
+	noRealm, err := asn1.Marshal(proxyMessage{KerbMessage: append(binary.BigEndian.AppendUint32(nil, uint32(len(r.asReq))), r.asReq...)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for want, body := range map[string][]byte{
+		"not a KDC-PROXY-MESSAGE":   []byte("junk"),
+		"target-domain is required": noRealm,
+		"does not serve that realm": envelope(t, r.asReq, "OTHER.TEST"),
+		"not a Kerberos request":    envelope(t, []byte{0x30, 0x03, 0x02, 0x01, 0x05}, testRealm),
+		"unreadable body":           nil,
+	} {
+		var rec *httptest.ResponseRecorder
+		if want == "unreadable body" {
+			// A body that fails while being read, as a client that hangs up does.
+			rec = httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/KdcProxy", iotest.ErrReader(io.ErrUnexpectedEOF))
+			h.ServeHTTP(rec, req)
+		} else {
+			rec = postKKDCP(t, h, body)
+		}
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Errorf("want %q, got %d %q", want, rec.Code, strings.TrimSpace(rec.Body.String()))
+		}
+	}
+	rec := postKKDCP(t, h, bytes.Repeat([]byte{0}, kkdcpMaxBody+1))
+	if rec.Code != http.StatusRequestEntityTooLarge || !strings.Contains(rec.Body.String(), "too large") {
+		t.Errorf("an oversize body: %d %q", rec.Code, rec.Body)
+	}
+}
+
+// parseProxyMessage tells a body that is not DER (the decoder's error) from
+// one that decodes and is wrong (ours), and a short kerb-message is an error
+// and not a panic: the length is read only once there are four octets of it.
+func TestParseProxyMessageErrors(t *testing.T) {
+	for name, tc := range map[string]struct {
+		body []byte
+		want error
+	}{
+		"not DER":         {[]byte("junk"), nil},
+		"trailing bytes":  {append(envelope(t, []byte{1}, testRealm), 0), errTrailing},
+		"0 octets":        {derMessage(t, nil), errPrefix},
+		"1 octet":         {derMessage(t, []byte{0}), errPrefix},
+		"3 octets":        {derMessage(t, []byte{0, 0, 0}), errPrefix},
+		"4, length 1":     {derMessage(t, []byte{0, 0, 0, 1}), errPrefix},
+		"4, length 0, ok": {derMessage(t, []byte{0, 0, 0, 0}), errOK},
+	} {
+		func() {
+			defer func() {
+				if p := recover(); p != nil {
+					t.Errorf("%s: panicked: %v", name, p)
+				}
+			}()
+			_, _, err := parseProxyMessage(tc.body)
+			switch {
+			case tc.want == errOK && err != nil:
+				t.Errorf("%s: %v", name, err)
+			case tc.want == nil && (err == nil || err == errTrailing || err == errPrefix):
+				t.Errorf("%s: want the decoder's error, got %v", name, err)
+			case tc.want != nil && tc.want != errOK && err != tc.want:
+				t.Errorf("%s: got %v, want %v", name, err, tc.want)
+			}
+		}()
+	}
+}
+
+const errOK = kkdcpError("ok")
+
+// derMessage is a KDC-PROXY-MESSAGE around kerb as it is, with a target-domain.
+func derMessage(t testing.TB, kerb []byte) []byte {
+	t.Helper()
+	b, err := asn1.Marshal(proxyMessage{KerbMessage: kerb, TargetDomain: testRealm})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// marshalProxyMessage writes DER by hand; the encoder is the oracle at the
+// lengths where DER changes shape (short form to 127, one length octet to 255,
+// two beyond), and what it wrote must read back through the parser.
+func TestMarshalProxyMessageIsDER(t *testing.T) {
+	for _, n := range []int{0, 1, 100, 118, 119, 120, 123, 124, 125, 126, 127, 128, 251, 252, 253, 254, 255, 256, 1000, 65535} {
+		reply := bytes.Repeat([]byte{0xa5}, n)
+		k := binary.BigEndian.AppendUint32(nil, uint32(n))
+		k = append(k, reply...)
+		want, err := asn1.Marshal(proxyMessage{KerbMessage: k})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := marshalProxyMessage(reply)
+		if !bytes.Equal(got, want) {
+			t.Errorf("%d octets: got %x..., want %x...", n, got[:min(len(got), 12)], want[:min(len(want), 12)])
+		}
+		if msg, realm, err := parseProxyMessage(got); err != nil || !bytes.Equal(msg, reply) || realm != "" {
+			t.Errorf("%d octets: does not read back: %v", n, err)
 		}
 	}
 }

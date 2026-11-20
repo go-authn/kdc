@@ -108,14 +108,9 @@ func (s *Server) serveKKDCP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not a Kerberos request", http.StatusBadRequest)
 		return
 	}
-	reply, err := marshalProxyMessage(out)
-	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
 	w.Header().Set("Content-Type", "application/kerberos")
 	w.WriteHeader(http.StatusOK)
-	w.Write(reply)
+	w.Write(marshalProxyMessage(out))
 }
 
 // parseProxyMessage reads one KDC-PROXY-MESSAGE and returns the Kerberos
@@ -144,11 +139,31 @@ func parseProxyMessage(b []byte) (msg []byte, realm string, err error) {
 
 // marshalProxyMessage wraps a reply: its length first, no target-domain
 // (not used in a server's message).
-func marshalProxyMessage(reply []byte) ([]byte, error) {
-	k := make([]byte, 4+len(reply))
-	binary.BigEndian.PutUint32(k, uint32(len(reply)))
-	copy(k[4:], reply)
-	return asn1.Marshal(proxyMessage{KerbMessage: k})
+//
+// It writes the DER by hand, SEQUENCE { [0] EXPLICIT OCTET STRING }, because
+// that is all a server's message holds and the encoder's one failure mode
+// (a value it cannot represent) cannot arise: a test holds it equal to the
+// encoder's output at the lengths where DER changes shape.
+func marshalProxyMessage(reply []byte) []byte {
+	octets := make([]byte, 0, 4+len(reply))
+	octets = binary.BigEndian.AppendUint32(octets, uint32(len(reply)))
+	octets = append(octets, reply...)
+	str := append(derHeader(0x04, len(octets)), octets...) // OCTET STRING
+	ctx := append(derHeader(0xa0, len(str)), str...)       // [0] EXPLICIT
+	return append(derHeader(0x30, len(ctx)), ctx...)       // SEQUENCE
+}
+
+// derHeader is a tag and a definite length, short form below 128 and the
+// minimal long form above (X.690 8.1.3).
+func derHeader(tag byte, n int) []byte {
+	if n < 0x80 {
+		return []byte{tag, byte(n)}
+	}
+	var l []byte
+	for x := n; x > 0; x >>= 8 {
+		l = append([]byte{byte(x)}, l...)
+	}
+	return append([]byte{tag, 0x80 | byte(len(l))}, l...)
 }
 
 type kkdcpError string
