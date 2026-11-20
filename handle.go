@@ -1,11 +1,13 @@
 package kdc
 
 import (
+	"fmt"
 	"runtime/debug"
 	"time"
 
 	"github.com/jcmturner/gofork/encoding/asn1"
 
+	"github.com/jcmturner/gokrb5/v8/iana/asnAppTag"
 	"github.com/jcmturner/gokrb5/v8/iana/errorcode"
 	"github.com/jcmturner/gokrb5/v8/messages"
 	"github.com/jcmturner/gokrb5/v8/types"
@@ -40,6 +42,13 @@ func (s *Server) serve(req []byte) (out []byte) {
 			out = nil
 		}
 	}()
+	// A request gokrb5 is known to panic on is dropped before it gets there
+	// (additional_tickets.go); the recover above stays for the ones nobody
+	// has found yet.
+	if additionalTicketsUnreadable(req) {
+		s.logf("kdc: a request whose additional-tickets is not a SEQUENCE OF Ticket was dropped before decoding")
+		return nil
+	}
 	// The message type is the second field, but the cheapest way to tell an
 	// AS-REQ from a TGS-REQ is to try each: they differ by an ASN.1
 	// application tag, so a wrong guess fails to parse rather than producing
@@ -62,14 +71,19 @@ func (s *Server) serve(req []byte) (out []byte) {
 // disagree about a field and both be valid, and a check against our own
 // re-encoding would then refuse an honest client, or accept a body that
 // differs from the one the client signed.
-func reqBodyOf(req []byte) []byte {
+func reqBodyOf(req []byte) []byte { return kdcReqBody(req, asnAppTag.TGSREQ) }
+
+// kdcReqBody is the KDC-REQ-BODY of a request under application tag appTag
+// (10 for an AS-REQ, 12 for a TGS-REQ), read the way gokrb5's marshalKDCReq
+// reads it (KDCReq.go:28), or nil.
+func kdcReqBody(req []byte, appTag int) []byte {
 	var m struct {
 		PVNO    int                  `asn1:"explicit,tag:1"`
 		MsgType int                  `asn1:"explicit,tag:2"`
 		PAData  types.PADataSequence `asn1:"explicit,optional,tag:3"`
 		ReqBody asn1.RawValue        `asn1:"explicit,tag:4"`
 	}
-	if _, err := asn1.UnmarshalWithParams(req, &m, "application,explicit,tag:12"); err != nil {
+	if _, err := asn1.UnmarshalWithParams(req, &m, fmt.Sprintf("application,explicit,tag:%d", appTag)); err != nil {
 		return nil
 	}
 	return m.ReqBody.Bytes

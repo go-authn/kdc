@@ -117,9 +117,13 @@ transport is the encryption.
   retries), no longer `KDC_ERR_C_PRINCIPAL_UNKNOWN` (a client gives up).
 - A TGT whose start is within `MaxSkew` in the future is accepted, so a clock
   stepped back does not make freshly issued TGTs "not yet valid".
-- A **panic in the third-party ASN.1 decoder** costs one request, not the
-  process: `gokrb5` v8.4.4 panics on a malformed additional-tickets field of a
-  KDC-REQ, found by `FuzzHandle`. The panic and its stack are logged.
+- A **malformed additional-tickets field** never reaches the decoder: `gokrb5`
+  v8.4.4 panics on one (found by `FuzzHandle`), so a KDC-REQ whose field is not
+  a `[11] SEQUENCE` is dropped first. Any other **panic in the third-party
+  ASN.1 decoder** costs one request, not the process, and is logged with its
+  stack; `FuzzHandle` fails on one.
+- The TGS refuses an authenticator that names another client than its ticket
+  (`KRB_AP_ERR_BADMATCH`, RFC 4120 3.2.3).
 - Names taken from the network are quoted in the log.
 - No account can be AS-REP-roasted: an AS-REQ without pre-authentication is
   always `KDC_ERR_PREAUTH_REQUIRED` (or `NULL_KEY`) and never a reply sealed

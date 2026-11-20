@@ -2,9 +2,24 @@
 
 ## Unreleased
 
+- Security: a KDC-REQ whose additional-tickets field is not a
+  `[11] SEQUENCE` (RFC 4120 5.4.1) is dropped before gokrb5 decodes it.
+  gokrb5 v8.4.4 `unmarshalTicketsSequence` indexes the second byte of that
+  value and panics on a one-byte one, before any authentication; v0.4.5 already
+  recovered from the panic, now the request never reaches it (#28). The
+  recover stays for panics not yet found, and `FuzzHandle` now FAILS when a
+  request reaches it instead of logging it.
+
+## v0.8.0
+
 - Added: `Server.Mint`, `Server.MintHandler` and `Config.MintCallers`: a TGT
   for a person with no key, asked for by an allowlisted caller over mutually
   authenticated TLS, returned as a KRB-CRED (RFC 4120 5.8). Off by default.
+- Fixed: the TGS compares the client name and realm in the authenticator with
+  the ticket's and answers `KRB_AP_ERR_BADMATCH` when they differ
+  (RFC 4120 3.2.3, as MIT `rd_req_dec.c`; the name type is not compared) (#40).
+
+## v0.7.0
 
 - Fixed: a Windows client's TGS-REQ is accepted. Its authenticator checksum is
   RSA-MD5 (type 7), unkeyed but sealed under the session key; MIT krb5 accepts
