@@ -25,9 +25,14 @@ type Config struct {
 	People directory.Source
 
 	// Services holds the keys for service principals, including the
-	// krbtgt/REALM@REALM this KDC issues its own tickets under. It is the
-	// same file a service like an NFS server reads, which is the point: one
-	// keytab, two readers, no third place for a key to drift.
+	// krbtgt/REALM@REALM this KDC issues its own tickets under.
+	//
+	// ⛔ It is the KDC's file alone. The krbtgt key forges a ticket for anyone
+	// and the other services' keys forge theirs, so a service (an NFS server)
+	// must be given a keytab holding ONLY its own key, extracted from this one,
+	// never this file. A service that reads this file can mint tickets for the
+	// whole realm, and one without a pinned Principal would also accept a TGT
+	// as a service ticket (go-authn/krb5 refuses that since v0.5.0).
 	Services *keytab.Keytab
 
 	// Lifetime caps a ticket. Zero means ten hours, which is MIT's default.
