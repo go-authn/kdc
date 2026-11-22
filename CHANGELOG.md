@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.10.0
+
+Security audit 2026-11-21 (suspicions, go-authn/kdc).
+
+- Breaking: at most 16 TCP connections per source address (per /64 for IPv6)
+  are served at once. With only the global cap of 256, one host holding 256
+  idle connections starved everyone else for 30 s (the listener itself never
+  blocked: past the cap a connection is closed on accept).
+- Docs: `Config.Services` and the README no longer say a service reads the
+  same keytab as the KDC. That file holds the krbtgt key and every service's
+  key; a service gets a keytab with only its own key.
+- Checked and left unchanged: `mintablePrincipal` accepting `@` (directory
+  names are email-style by design and are looked up exactly) and the RSA-MD5
+  authenticator checksum (the same rule as MIT's; see the comment on
+  `checkBodyChecksum`).
+
 ## v0.9.0
 
 - Added: `Server.KKDCPHandler`, Kerberos over HTTPS ([MS-KKDCP]): POST a

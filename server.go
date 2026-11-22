@@ -19,9 +19,11 @@ type Server struct {
 	mu     sync.Mutex
 	closed bool
 	conns  map[net.Conn]struct{}
-	pc     net.PacketConn
-	ln     net.Listener
-	wg     sync.WaitGroup
+	// perPeer counts the connections in conns by peerKey.
+	perPeer map[string]int
+	pc      net.PacketConn
+	ln      net.Listener
+	wg      sync.WaitGroup
 }
 
 // New checks a configuration and returns a server for it.
@@ -35,7 +37,35 @@ func New(cfg Config) (*Server, error) {
 	if err := cfg.check(); err != nil {
 		return nil, err
 	}
-	return &Server{cfg: cfg, lookaside: newLookaside(), conns: make(map[net.Conn]struct{})}, nil
+	return &Server{cfg: cfg, lookaside: newLookaside(), conns: make(map[net.Conn]struct{}), perPeer: make(map[string]int)}, nil
+}
+
+// peerKey names the source a connection is counted against: its IP address,
+// and for IPv6 its /64, which is what one subscriber is given and so what one
+// host can rotate through freely. An address that is not TCP (a test's pipe)
+// is its own string.
+func peerKey(a net.Addr) string {
+	if a == nil {
+		return ""
+	}
+	t, ok := a.(*net.TCPAddr)
+	if !ok {
+		return a.String()
+	}
+	if t == nil {
+		return ""
+	}
+	if v4 := t.IP.To4(); v4 != nil {
+		return v4.String()
+	}
+	return t.IP.Mask(net.CIDRMask(64, 128)).String()
+}
+
+// peerCount is the number of connections held by one peerKey.
+func (s *Server) peerCount(key string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.perPeer[key]
 }
 
 // maxRequest caps one request. RFC 4120 puts no limit on a KDC-REQ, but a
@@ -56,6 +86,11 @@ var (
 	// as soon as it is accepted; a client then retries, as it would on any
 	// refused connection.
 	maxTCPConns = 256
+	// maxTCPPerIP bounds the connections one source address (one /64 for
+	// IPv6) holds at once. Without it a single host takes every slot above
+	// and keeps them for tcpIdle, which starves every other client: the
+	// listener does not block, but nobody else is served.
+	maxTCPPerIP = 16
 	// maxUDPWorkers bounds the datagrams answered at once. One more is
 	// dropped, which UDP allows and every client handles: it resends, or
 	// falls back to TCP.
@@ -140,12 +175,14 @@ func (s *Server) ServeTCP(ln net.Listener) error {
 			c.Close()
 			return ErrClosed
 		}
-		if len(s.conns) >= maxTCPConns {
+		peer := peerKey(c.RemoteAddr())
+		if len(s.conns) >= maxTCPConns || s.perPeer[peer] >= maxTCPPerIP {
 			s.mu.Unlock()
 			c.Close()
 			continue
 		}
 		s.conns[c] = struct{}{}
+		s.perPeer[peer]++
 		s.wg.Add(1)
 		s.mu.Unlock()
 		go func() {
@@ -160,6 +197,10 @@ func (s *Server) serveConn(c net.Conn) {
 		c.Close()
 		s.mu.Lock()
 		delete(s.conns, c)
+		peer := peerKey(c.RemoteAddr())
+		if s.perPeer[peer]--; s.perPeer[peer] <= 0 {
+			delete(s.perPeer, peer)
+		}
 		s.mu.Unlock()
 	}()
 	for {

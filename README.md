@@ -21,6 +21,12 @@ This is the **issuing** half. [go-authn/krb5](https://github.com/go-authn/krb5)
 is the accepting half, and a service that only verifies tickets needs this
 package not at all.
 
+⛔ The keytab given to `Services` is **the KDC's alone**: it holds the krbtgt
+key and every service's key, each of which forges tickets. A service gets a
+keytab with only its own key, never this file. One source address may hold 16
+TCP connections at once (a /64 for IPv6), so a single host cannot starve the
+rest of the 256 slots.
+
 ## ⛔ What can and cannot back a realm
 
 A KDC must **decrypt** the client's pre-authentication with that person's
