@@ -59,7 +59,7 @@ func benchASNoPreauth(b *testing.B, people directory.Source) {
 	if err := kt.AddEntry("krbtgt/"+testRealm, testRealm, "k", time.Now(), 2, 18); err != nil {
 		b.Fatal(err)
 	}
-	s, err := New(Config{Realm: testRealm, People: people, Services: kt})
+	s, err := New(Config{Realm: testRealm, People: people, Services: kt, AllowPasswordDerivedAS: true})
 	if err != nil {
 		b.Fatal(err)
 	}

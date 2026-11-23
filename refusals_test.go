@@ -162,7 +162,7 @@ func TestTheDefaultsAreTheOnesEverybodyAssumes(t *testing.T) {
 	// A lifetime shorter than the default proves the field is read at all: a
 	// ticket that outlives what was asked for is a credential alive past the
 	// point its holder expects.
-	start(t, kdc.Config{People: people, Services: realmKeytab(t),
+	start(t, kdc.Config{People: people, Services: realmKeytab(t), AllowPasswordDerivedAS: true,
 		Lifetime: time.Hour, MaxSkew: time.Minute})
 
 	out := kinitAs(t, "alice", password)

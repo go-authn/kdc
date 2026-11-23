@@ -111,7 +111,7 @@ func newKKDCPRealm(t testing.TB) kkdcpRealm {
 	if tt, ok := t.(*testing.T); ok {
 		logf = tt.Logf
 	}
-	s, err := New(Config{Realm: testRealm, People: onlyOne{id}, Services: kt, Logf: logf})
+	s, err := New(Config{Realm: testRealm, People: onlyOne{id}, Services: kt, Logf: logf, AllowPasswordDerivedAS: true})
 	if err != nil {
 		t.Fatal(err)
 	}
