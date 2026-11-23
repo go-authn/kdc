@@ -51,13 +51,13 @@ type Config struct {
 	// AllowPasswordDerivedAS enables the AS exchange this KDC runs: a client
 	// proves a password by encrypting a timestamp under a key the KDC derives
 	// from the password the directory holds (RFC 3962 string-to-key). False, the
-	// default, refuses every AS-REQ with KDC_ERR_POLICY (RFC 4120 §7.5.9)
-	// before the principal is looked up, and Logf names this option.
+	// default, refuses an AS-REQ for a person whose directory entry holds a
+	// password with KDC_ERR_POLICY (RFC 4120 §7.5.9), and Logf names this
+	// option.
 	//
 	// ⛔ It is opt-in because the derivation needs the password itself, in the
-	// clear, in the directory; a realm that provisions keys, not passwords, has
-	// no business answering this way. TGS and the mint endpoint do not depend
-	// on it.
+	// clear, in the directory. Keys of services and krbtgt (the keytab), TGS and
+	// the mint endpoint do not depend on it.
 	AllowPasswordDerivedAS bool
 
 	// Logf, when set, is told why a request was refused.

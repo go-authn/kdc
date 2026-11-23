@@ -4,8 +4,9 @@
 
 - Breaking: the password-derived AS exchange is now an explicit opt-in,
   `Config.AllowPasswordDerivedAS`, false by default (go-authn/kdc#41). Off,
-  every AS-REQ is answered `KDC_ERR_POLICY` (12, RFC 4120 §7.5.9) before the
-  principal is looked up, with a reason and a `Logf` line that name the option.
+  an AS-REQ for a person whose directory entry holds a password is answered
+  `KDC_ERR_POLICY` (12, RFC 4120 §7.5.9), with a reason and a `Logf` line that
+  name the option. Keytab keys (krbtgt, services) are unaffected.
   A realm that relied on the old behaviour sets `AllowPasswordDerivedAS: true`.
   TGS, minting and KKDCP are unaffected.
 

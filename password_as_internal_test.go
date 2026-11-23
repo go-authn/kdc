@@ -28,7 +28,6 @@ func TestPasswordDerivedASIsRefusedByDefault(t *testing.T) {
 	reqs := map[string][]byte{
 		"no pre-auth":      asReq(t, "alice", []string{"krbtgt", testRealm}, nil),
 		"with a timestamp": asReq(t, "alice", []string{"krbtgt", testRealm}, timestampPA(t, key, now())),
-		"unknown person":   asReq(t, "nobody", []string{"krbtgt", testRealm}, nil),
 	}
 	for name, req := range reqs {
 		out := s.handle(req)
@@ -45,6 +44,25 @@ func TestPasswordDerivedASIsRefusedByDefault(t *testing.T) {
 	}
 	if len(logged) == 0 || !strings.Contains(strings.Join(logged, "\n"), "AllowPasswordDerivedAS") {
 		t.Errorf("the operator log does not name the option: %q", logged)
+	}
+}
+
+// Controls: with the option off, what is not password-derived is unchanged. An
+// unknown name is still unknown, an identity with no password keeps NULL_KEY,
+// and the keytab keys (krbtgt, services) still serve the TGS.
+func TestPasswordDerivedASOffLeavesTheOtherPathsAlone(t *testing.T) {
+	s := testServer(t, directory.NewIdentity("alice", directory.WithPassword("alicepw")))
+	s.cfg.AllowPasswordDerivedAS = false
+	if got := errorCode(t, s.handle(asReq(t, "nobody", []string{"krbtgt", testRealm}, nil))); got != errorcode.KDC_ERR_C_PRINCIPAL_UNKNOWN {
+		t.Errorf("unknown person: code %d, want C_PRINCIPAL_UNKNOWN", got)
+	}
+	if out := s.handle(tgsAt(t, s, "alice", now(), 1)); !issued(t, out) {
+		t.Errorf("TGS with the option off: code %d, want a ticket", krbErrorCode(t, out))
+	}
+	v := testServer(t, directory.NewIdentity("bob", directory.WithVerifier(func(string) error { return nil })))
+	v.cfg.AllowPasswordDerivedAS = false
+	if got := errorCode(t, v.handle(asReq(t, "bob", []string{"krbtgt", testRealm}, nil))); got != errorcode.KDC_ERR_NULL_KEY {
+		t.Errorf("no-password identity: code %d, want NULL_KEY", got)
 	}
 }
 

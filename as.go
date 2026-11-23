@@ -26,14 +26,6 @@ func (s *Server) serveAS(req *messages.ASReq) []byte {
 	if req.ReqBody.Realm != s.cfg.Realm {
 		return s.krbErr(sname, errorcode.KDC_ERR_WRONG_REALM, "this KDC does not serve that realm", nil)
 	}
-	// ⛔ First of all, before the principal is looked up or anything derived:
-	// the answer says nothing about who exists, and costs nothing. RFC 4120
-	// §7.5.9: KDC_ERR_POLICY, "KDC policy rejects request".
-	if !s.cfg.AllowPasswordDerivedAS {
-		s.logf("kdc: AS-REQ refused: password-derived authentication is off; set Config.AllowPasswordDerivedAS to enable it")
-		return s.krbErr(sname, errorcode.KDC_ERR_POLICY,
-			"password-derived authentication is disabled (AllowPasswordDerivedAS)", nil)
-	}
 	// Before the principal is looked up, so the answer says nothing about
 	// who exists.
 	if !offersDefault(req.ReqBody.EType) {
@@ -46,6 +38,16 @@ func (s *Server) serveAS(req *messages.ASReq) []byte {
 			return s.krbErr(sname, errorcode.KDC_ERR_SVC_UNAVAILABLE, "the directory is unavailable", nil)
 		}
 		return s.unknownPrincipal(sname)
+	}
+	// ⛔ Only an identity that carries a PASSWORD is refused: its key would be
+	// derived from it (string-to-key). Nothing is derived to say so. RFC 4120
+	// §7.5.9: KDC_ERR_POLICY, "KDC policy rejects request". An identity with no
+	// password keeps its own answer below (KDC_ERR_NULL_KEY), and the keys of
+	// services and krbtgt live in the keytab and never take this path.
+	if !s.cfg.AllowPasswordDerivedAS && s.cfg.hasKey(id) {
+		s.logf("kdc: AS-REQ refused: %s holds a password and password-derived authentication is off; set Config.AllowPasswordDerivedAS to enable it", id.Name())
+		return s.krbErr(sname, errorcode.KDC_ERR_POLICY,
+			"password-derived authentication is disabled (AllowPasswordDerivedAS)", nil)
 	}
 	ts := findPA(req.PAData, patype.PA_ENC_TIMESTAMP)
 	if ts == nil {

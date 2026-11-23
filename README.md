@@ -13,7 +13,8 @@ srv, err := kdc.New(kdc.Config{
     Services: keytab,          // krbtgt/REALM, and a key per service
     Logf:     log.Printf,      // why each request was refused; nil says nothing
 
-    // Off by default: every AS-REQ is refused KDC_ERR_POLICY (RFC 4120 §7.5.9).
+    // Off by default: an AS-REQ for a password-bearing person is refused
+    // KDC_ERR_POLICY (RFC 4120 §7.5.9).
     // True derives each person's key from the password the directory holds.
     AllowPasswordDerivedAS: true,
 })
