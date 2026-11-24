@@ -96,7 +96,7 @@ func twoPeople(t testing.TB, cfg func(*Config)) *Server {
 			t.Fatal(err)
 		}
 	}
-	c := Config{Realm: testRealm, Services: kt, Logf: t.Logf, People: manyPeople{
+	c := Config{Realm: testRealm, Services: kt, Logf: t.Logf, AllowPasswordDerivedAS: true, People: manyPeople{
 		directory.NewIdentity("alice", directory.WithPassword("alicepw")),
 		directory.NewIdentity("bob", directory.WithPassword("bobpw")),
 	}}

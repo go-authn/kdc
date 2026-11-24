@@ -129,7 +129,7 @@ func start(t *testing.T, cfg kdc.Config) (confPath, ccache string) {
 func TestMITClientGetsATGTAndAServiceTicket(t *testing.T) {
 	requireMIT(t)
 	people := onePerson{directory.NewIdentity("alice", directory.WithPassword(password))}
-	start(t, kdc.Config{People: people, Services: realmKeytab(t)})
+	start(t, kdc.Config{People: people, Services: realmKeytab(t), AllowPasswordDerivedAS: true})
 
 	// kinit reads the password on stdin when it is not a terminal.
 	cmd := exec.Command("pkgx", "+kerberos.org", "--", "kinit", "alice@"+realm)
@@ -165,7 +165,7 @@ func TestMITClientGetsATGTAndAServiceTicket(t *testing.T) {
 func TestAWrongPasswordIsRefused(t *testing.T) {
 	requireMIT(t)
 	people := onePerson{directory.NewIdentity("alice", directory.WithPassword(password))}
-	start(t, kdc.Config{People: people, Services: realmKeytab(t)})
+	start(t, kdc.Config{People: people, Services: realmKeytab(t), AllowPasswordDerivedAS: true})
 
 	cmd := exec.Command("pkgx", "+kerberos.org", "--", "kinit", "alice@"+realm)
 	cmd.Env = os.Environ()
@@ -182,7 +182,7 @@ func TestAWrongPasswordIsRefused(t *testing.T) {
 func TestAnUnknownPrincipalIsRefused(t *testing.T) {
 	requireMIT(t)
 	people := onePerson{directory.NewIdentity("alice", directory.WithPassword(password))}
-	start(t, kdc.Config{People: people, Services: realmKeytab(t)})
+	start(t, kdc.Config{People: people, Services: realmKeytab(t), AllowPasswordDerivedAS: true})
 
 	cmd := exec.Command("pkgx", "+kerberos.org", "--", "kinit", "mallory@"+realm)
 	cmd.Env = os.Environ()
@@ -207,7 +207,7 @@ func TestAVerifierBackedDirectoryCannotServeARealm(t *testing.T) {
 	// ldapdir here needs to be told that, not "password incorrect".
 	people := onePerson{directory.NewIdentity("alice",
 		directory.WithVerifier(func(string) error { return nil }))}
-	start(t, kdc.Config{People: people, Services: realmKeytab(t)})
+	start(t, kdc.Config{People: people, Services: realmKeytab(t), AllowPasswordDerivedAS: true})
 
 	cmd := exec.Command("pkgx", "+kerberos.org", "--", "kinit", "alice@"+realm)
 	cmd.Env = os.Environ()

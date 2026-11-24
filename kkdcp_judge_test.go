@@ -153,7 +153,7 @@ func kinitOut(t *testing.T, who, pw string) (string, error) {
 func TestMITKinitAndKvnoThroughTheProxy(t *testing.T) {
 	requireMIT(t)
 	people := onePerson{directory.NewIdentity("alice", directory.WithPassword(password))}
-	posts := startProxied(t, kdc.Config{People: people, Services: realmKeytab(t)})
+	posts := startProxied(t, kdc.Config{People: people, Services: realmKeytab(t), AllowPasswordDerivedAS: true})
 
 	if out, err := kinitOut(t, "alice", password); err != nil {
 		t.Fatalf("kinit through the proxy: %v\n%s", err, out)
@@ -193,7 +193,7 @@ func TestMITRefusalsAreTheSameThroughTheProxyAndOn88(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			cfg := kdc.Config{People: onePerson{c.person}, Services: realmKeytab(t)}
+			cfg := kdc.Config{People: onePerson{c.person}, Services: realmKeytab(t), AllowPasswordDerivedAS: true}
 			start(t, cfg)
 			on88, err := kinitOut(t, c.who, c.pw)
 			if err == nil {

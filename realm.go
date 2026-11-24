@@ -48,6 +48,18 @@ type Config struct {
 	// e.g. "https://login.example.org". Empty, the default, disables minting.
 	MintCallers []string
 
+	// AllowPasswordDerivedAS enables the AS exchange this KDC runs: a client
+	// proves a password by encrypting a timestamp under a key the KDC derives
+	// from the password the directory holds (RFC 3962 string-to-key). False, the
+	// default, refuses an AS-REQ for a person whose directory entry holds a
+	// password with KDC_ERR_POLICY (RFC 4120 §7.5.9), and Logf names this
+	// option.
+	//
+	// ⛔ It is opt-in because the derivation needs the password itself, in the
+	// clear, in the directory. Keys of services and krbtgt (the keytab), TGS and
+	// the mint endpoint do not depend on it.
+	AllowPasswordDerivedAS bool
+
 	// Logf, when set, is told why a request was refused.
 	//
 	// It exists because the protocol cannot say: a client is given an error

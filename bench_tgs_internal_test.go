@@ -88,7 +88,7 @@ func testServerTB(tb testing.TB, id *directory.Identity) *Server {
 			tb.Fatal(err)
 		}
 	}
-	s, err := New(Config{Realm: testRealm, People: onlyOne{id}, Services: kt})
+	s, err := New(Config{Realm: testRealm, People: onlyOne{id}, Services: kt, AllowPasswordDerivedAS: true})
 	if err != nil {
 		tb.Fatal(err)
 	}

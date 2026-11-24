@@ -186,7 +186,7 @@ func FuzzHandle(f *testing.F) {
 			f.Fatal(err)
 		}
 	}
-	s, err := New(Config{Realm: testRealm, People: onlyOne{id}, Services: kt})
+	s, err := New(Config{Realm: testRealm, People: onlyOne{id}, Services: kt, AllowPasswordDerivedAS: true})
 	if err != nil {
 		f.Fatal(err)
 	}
