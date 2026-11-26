@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Added: `Config.PAC` and `NewDomainSID`: service tickets for the named
+  services carry a PAC ([MS-PAC]: LOGON_INFO, CLIENT_INFO, UPN_DNS_INFO,
+  PAC_REQUESTOR, signatures 6, 7, 16, 19). RIDs are the directory's
+  uidNumber/gidNumber; a client with no uidNumber, or two accounts sharing a
+  number, is refused (`KDC_ERR_POLICY`). The default (`PAC == nil`) is
+  unchanged: no PAC. Design: `docs/design/pac.md` (go-authn/kdc#49).
+
 - `interop/samba`: Docker harness (skipped unless `SAMBA_INTEROP=1`) measuring
   Samba 4.22 as a non-AD server behind go-authn/kdc, MIT krb5kdc and Heimdal.
   Result: a standalone-role Samba accepts our PAC-less tickets.

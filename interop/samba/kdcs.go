@@ -54,6 +54,10 @@ type GoKDC struct {
 // and Samba (`net setdomainsid`): LOGON_INFO's domain must be Samba's own.
 const PACDomainSID = "S-1-5-21-1111111111-2222222222-3333333333"
 
+// newAttributes is a variable so a test can make it refuse: its input is
+// constant, so nothing else can.
+var newAttributes = directory.NewAttributes
+
 func (g *GoKDC) Name() string {
 	if g.PAC {
 		return "go-authn/kdc (PAC)"
@@ -97,7 +101,7 @@ func (g *GoKDC) Start(ctx context.Context) (Env, error) {
 	opts := []directory.Option{directory.WithPassword(Pass)}
 	cfg := kdc.Config{Realm: g.Realm, Services: all, AllowPasswordDerivedAS: true}
 	if g.PAC {
-		a, err := directory.NewAttributes(
+		a, err := newAttributes(
 			directory.Attribute{Name: "uidNumber", Values: []string{"1001"}},
 			directory.Attribute{Name: "gidNumber", Values: []string{"1000"}})
 		if err != nil {

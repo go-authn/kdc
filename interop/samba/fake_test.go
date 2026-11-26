@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/go-authn/directory"
 )
 
 // fakeDocker replaces the docker CLI. It answers every call as a success,
@@ -244,6 +246,24 @@ func TestGoKDCRefusals(t *testing.T) {
 	}
 	if err := startNoPanic(t, &GoKDC{Realm: ""}); err == nil || !strings.Contains(err.Error(), "kdc.New") {
 		t.Fatalf("an empty realm: %v", err)
+	}
+}
+
+func TestGoKDCPACRow(t *testing.T) {
+	if (&GoKDC{PAC: true}).Name() == (&GoKDC{}).Name() || !strings.Contains((&GoKDC{PAC: true}).Name(), "PAC") {
+		t.Error("the PAC row is not named apart from the default")
+	}
+	g := &GoKDC{Realm: "GOAUTHN.TEST", listen: "127.0.0.1:0", PAC: true}
+	if _, err := g.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	g.Stop()
+	old := newAttributes
+	t.Cleanup(func() { newAttributes = old })
+	boom := fmt.Errorf("attributes refused")
+	newAttributes = func(...directory.Attribute) (directory.Attributes, error) { return directory.Attributes{}, boom }
+	if err := startNoPanic(t, &GoKDC{Realm: "GOAUTHN.TEST", listen: "127.0.0.1:0", PAC: true}); err != boom {
+		t.Errorf("a refused attribute set: %v", err)
 	}
 }
 

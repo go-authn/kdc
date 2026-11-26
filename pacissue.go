@@ -41,7 +41,7 @@ type PAC struct {
 // NewDomainSID returns a random domain SID, S-1-5-21-a-b-c.
 func NewDomainSID() (string, error) {
 	var b [12]byte
-	if _, err := rand.Read(b[:]); err != nil {
+	if _, err := randRead(b[:]); err != nil {
 		return "", err
 	}
 	v := func(i int) uint32 { return uint32(b[i])<<24 | uint32(b[i+1])<<16 | uint32(b[i+2])<<8 | uint32(b[i+3]) }
@@ -57,6 +57,16 @@ var (
 	errNoNumber = errors.New("the principal has no uidNumber: no PAC can be issued")
 	// errRIDClash is a number two names hold.
 	errRIDClash = errors.New("two accounts share one uidNumber or gidNumber")
+)
+
+// The calls whose failure no input can provoke, as variables so that a test
+// can make each one fail and show the failure is reported, not swallowed.
+var (
+	randRead    = rand.Read
+	getEtype    = crypto.GetEtype
+	genKey      = types.GenerateEncryptionKey
+	marshalASN1 = asn1.Marshal
+	encryptWith = crypto.GetEncryptedData
 )
 
 // maxPACGroups is the cap on groups in a PAC (the user's decision D8).
@@ -236,11 +246,11 @@ func (s *Server) logonInfo(st *pacState, id *directory.Identity, authTime time.T
 func (s *Server) newTicket(cname types.PrincipalName, sname types.PrincipalName, tflags asn1.BitString,
 	kvno int, authTime, start, end time.Time, build func(zeroed []byte, serverKey, kdcKey types.EncryptionKey) ([]byte, error)) (messages.Ticket, types.EncryptionKey, error) {
 
-	et, err := crypto.GetEtype(defaultEtype)
+	et, err := getEtype(defaultEtype)
 	if err != nil {
 		return messages.Ticket{}, types.EncryptionKey{}, err
 	}
-	session, err := types.GenerateEncryptionKey(et)
+	session, err := genKey(et)
 	if err != nil {
 		return messages.Ticket{}, types.EncryptionKey{}, err
 	}
@@ -259,12 +269,12 @@ func (s *Server) newTicket(cname types.PrincipalName, sname types.PrincipalName,
 		AuthTime: authTime, StartTime: start, EndTime: end,
 	}
 	marshal := func(pacBytes []byte) ([]byte, error) {
-		inner, err := asn1.Marshal(types.AuthorizationData{{ADType: adtype.ADWin2KPAC, ADData: pacBytes}})
+		inner, err := marshalASN1(types.AuthorizationData{{ADType: adtype.ADWin2KPAC, ADData: pacBytes}})
 		if err != nil {
 			return nil, err
 		}
 		etp.AuthorizationData = types.AuthorizationData{{ADType: adtype.ADIfRelevant, ADData: inner}}
-		b, err := asn1.Marshal(etp)
+		b, err := marshalASN1(etp)
 		if err != nil {
 			return nil, err
 		}
@@ -282,7 +292,7 @@ func (s *Server) newTicket(cname types.PrincipalName, sname types.PrincipalName,
 	if err != nil {
 		return messages.Ticket{}, types.EncryptionKey{}, err
 	}
-	ed, err := crypto.GetEncryptedData(b, skey, keyusage.KDC_REP_TICKET, kvno)
+	ed, err := encryptWith(b, skey, keyusage.KDC_REP_TICKET, kvno)
 	if err != nil {
 		return messages.Ticket{}, types.EncryptionKey{}, err
 	}

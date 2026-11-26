@@ -1,6 +1,10 @@
 # Design: a PAC in go-authn/kdc tickets
 
-Status: DESIGN, not implemented. Decided on 2026-11-26: go-authn/kdc issues a
+Status: IMPLEMENTED (opt-in, `Config.PAC`) with deviations: the default is
+`pac = none` (D6 amended: standalone Samba refuses LOGON_INFO), the PAC is built
+at service-ticket time from the directory rather than copied from a TGT (TGTs
+carry no PAC, so D5 and TGS-side PAC verification do not arise), and D7
+(S-1-18-1) is not applied. Decided on 2026-11-26: go-authn/kdc issues a
 PAC. This document covers what to build and how to prove it works. It ends
 with the decisions that are the owner's to make.
 

@@ -224,6 +224,26 @@ wrong password gets, because an unauthenticated caller is told no more than
 client's (and, for `ETYPE_NOSUPP`, the list offered), so an operator can tell a
 mismatched cipher from a mistyped password.
 
+## An optional PAC
+
+By default tickets carry no PAC, which is what a standalone Samba needs (it
+refuses a PAC holding LOGON_INFO). A service that wants one (a Samba member
+server, an SMB or NFS server mapping tickets to accounts) is named in
+`Config.PAC`:
+
+```go
+sid, _ := kdc.NewDomainSID() // once, then keep it: it is the domain's identity
+cfg.PAC = &kdc.PAC{DomainSID: sid, Services: []string{"cifs/files.example.org"}}
+```
+
+Those services' tickets carry `KERB_VALIDATION_INFO`, `CLIENT_INFO`, the
+UPN/DNS info, `PAC_REQUESTOR` (CVE-2021-42287) and the server, KDC, ticket and
+full signatures (16 and 19, CVE-2022-37967). User and group RIDs are the
+directory's `uidNumber` and `gidNumber`; a person with no `uidNumber` gets no
+ticket for such a service (fail closed), two accounts sharing a number are
+refused, groups without a `gidNumber` are left out, and at most 256 groups are
+carried. Design and measurements: [docs/design/pac.md](docs/design/pac.md).
+
 ## The judge
 
 MIT's own `kinit` and `kvno`. **No MIT KDC is involved** — the keytab is built
