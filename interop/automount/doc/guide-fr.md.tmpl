@@ -1,7 +1,3 @@
----
-title: "Montage automatique d'un partage Samba avec Kerberos, sans kinit humain"
----
-
 # Montage automatique Samba + Kerberos sous Debian 13 (Proxmox, LXC)
 
 Ce guide décrit une preuve de bout en bout : un client Debian 13 monte un
