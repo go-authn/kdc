@@ -4,8 +4,12 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -107,17 +111,41 @@ func TestOutString(t *testing.T) {
 	}
 }
 
-// fakeTart writes a `tart` that echoes its arguments, its stdin, and exits
-// with the code in $FAKE_RC, and puts it first on PATH.
+// TestMain lets the test binary play `tart` (a copy of it is put on PATH by
+// fakeTart): it echoes its arguments and its stdin, and exits with the code in
+// $FAKE_RC. A Go fake runs on every platform, a shell script does not.
+func TestMain(m *testing.M) {
+	if os.Getenv("AUTOMOUNT_FAKE_TART") == "1" {
+		fmt.Printf("args: %s\n", strings.Join(os.Args[1:], " "))
+		_, _ = io.Copy(os.Stdout, os.Stdin)
+		fmt.Fprintln(os.Stderr, "err")
+		rc, _ := strconv.Atoi(os.Getenv("FAKE_RC"))
+		os.Exit(rc)
+	}
+	os.Exit(m.Run())
+}
+
+// fakeTart copies this test binary to a file named tart first on PATH.
 func fakeTart(t *testing.T) {
 	t.Helper()
-	dir := t.TempDir()
-	script := "#!/bin/sh\necho \"args: $*\"\ncat\necho err >&2\nexit ${FAKE_RC:-0}\n"
-	if err := os.WriteFile(filepath.Join(dir, "tart"), []byte(script), 0o755); err != nil {
+	self, err := os.ReadFile(os.Args[0])
+	if err != nil {
 		t.Fatal(err)
 	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "tart"+exeSuffix), self, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AUTOMOUNT_FAKE_TART", "1")
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
+
+var exeSuffix = func() string {
+	if runtime.GOOS == "windows" {
+		return ".exe"
+	}
+	return ""
+}()
 
 func TestTartRun(t *testing.T) {
 	fakeTart(t)

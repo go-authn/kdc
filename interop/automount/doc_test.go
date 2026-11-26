@@ -24,9 +24,11 @@ func docFuncs(results []CaseResult) template.FuncMap {
 	}
 	fence := func(s string) string { return "```\n" + strings.TrimRight(s, "\n") + "\n```\n" }
 	return template.FuncMap{
-		"fence":      fence,
-		"pkgs":       func() string { return HostPackages },
-		"nosync":     func() string { return strings.Replace(KRB5Conf(), "rdns = false", "rdns = false\n  kdc_timesync = 0", 1) },
+		"fence": fence,
+		"pkgs":  func() string { return HostPackages },
+		"nosync": func() string {
+			return strings.Replace(KRB5Conf(), "rdns = false", "rdns = false\n  kdc_timesync = 0", 1)
+		},
 		"hosts":      func(kdcIP string) string { return HostsFile(kdcIP) },
 		"krb5":       KRB5Conf,
 		"mitkdc":     MITKDCConf,
