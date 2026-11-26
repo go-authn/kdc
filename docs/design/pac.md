@@ -236,10 +236,10 @@ Our encoder writes; it never reads untrusted NDR (see "At the TGS").
 
 **Size:** each group costs 8 bytes in GroupIds. With 100 groups a PAC is
 about 1.5 KB, and the ticket travels twice in a TGS exchange. This KDC
-answers UDP (`server.go:106`) and has no KRB_ERR_RESPONSE_TOO_BIG path. A cap
-on groups in the PAC (refuse or truncate with a log line) and a TCP-retry
-answer for big replies are part of the implementation. RFC 4120 §7.2.1 must
-be opened for the latter.
+answers UDP, and (v0.12.1, RFC 4120 §7.2.1) a reply over 1465 bytes
+(`maxUDPReply`) is replaced by KRB_ERR_RESPONSE_TOO_BIG (52), so the client
+repeats over TCP; the lookaside keeps the full reply. 1465 is our choice, not
+a standard. The cap on groups is D8 (256), tested with a full 256-group PAC.
 
 ## SIDs and RIDs
 

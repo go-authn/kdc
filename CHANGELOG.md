@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.12.1
+
+- Fixed: a UDP reply over 1465 bytes (a ticket with a big PAC) is replaced by
+  `KRB_ERR_RESPONSE_TOO_BIG` (52), so the client retries over TCP, as RFC 4120
+  §7.2.1 requires; before, the oversize datagram was sent and fragmented or
+  lost. Tested with a PAC of 256 groups.
+
 ## v0.12.0
 
 - Added: `Config.PAC` and `NewDomainSID`: service tickets for the named

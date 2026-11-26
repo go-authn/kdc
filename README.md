@@ -69,7 +69,9 @@ not per request.
 ## What it implements
 
 AS-REQ and TGS-REQ, over UDP and TCP, with encrypted-timestamp
-pre-authentication **required**.
+pre-authentication **required**. A reply over 1465 bytes (a ticket with a big
+PAC) is not sent as a datagram: the client gets `KRB_ERR_RESPONSE_TOO_BIG` and
+repeats over TCP (RFC 4120 §7.2.1).
 
 What an unauthenticated peer can hold is bounded: a TCP message, its length
 included, must arrive within 30 seconds; at most 256 TCP connections are served
