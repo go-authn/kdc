@@ -236,15 +236,50 @@ func TestGoKDC(t *testing.T) {
 }
 
 func TestGoKDCRefusals(t *testing.T) {
-	if _, err := (&GoKDC{Realm: "R", etype: 9999}).Start(context.Background()); err == nil || !strings.Contains(err.Error(), "key of krbtgt/R") {
+	if err := startNoPanic(t, &GoKDC{Realm: "R", etype: 9999}); err == nil || !strings.Contains(err.Error(), "key of krbtgt/R") {
 		t.Fatalf("an unknown etype: %v", err)
 	}
-	if _, err := (&GoKDC{Realm: "R", listen: "no-such-host.invalid:x"}).Start(context.Background()); err == nil {
+	if err := startNoPanic(t, &GoKDC{Realm: "R", listen: "no-such-host.invalid:x"}); err == nil {
 		t.Fatal("an address that cannot be listened on was accepted")
 	}
-	if _, err := (&GoKDC{Realm: ""}).Start(context.Background()); err == nil || !strings.Contains(err.Error(), "kdc.New") {
+	if err := startNoPanic(t, &GoKDC{Realm: ""}); err == nil || !strings.Contains(err.Error(), "kdc.New") {
 		t.Fatalf("an empty realm: %v", err)
 	}
 }
 
 func readFixture(name string) ([]byte, error) { return os.ReadFile("testdata/" + name) }
+
+func TestRunDockerOutcomes(t *testing.T) {
+	old := dockerBin
+	t.Cleanup(func() { dockerBin = old })
+	ctx := context.Background()
+
+	dockerBin = "cat" // echoes stdin: stdout and stdin are wired
+	o, err := runDocker(ctx, []byte("hi"))
+	if err != nil || o.Code != 0 || string(o.Stdout) != "hi" {
+		t.Fatalf("cat: %+v %v", o, err)
+	}
+	dockerBin = "false" // runs and fails: a result, not an error
+	o, err = runDocker(ctx, nil)
+	if err != nil || o.Code != 1 {
+		t.Fatalf("false: %+v %v", o, err)
+	}
+	dockerBin = "no-such-program-for-the-interop-test" // cannot run: an error
+	if _, err = runDocker(ctx, nil); err == nil {
+		t.Fatal("a missing program was not an error")
+	}
+}
+
+// startNoPanic runs Start and reports a panic as such, so that a refusal
+// removed by mutation is caught by an assertion.
+func startNoPanic(t *testing.T, g *GoKDC) (err error) {
+	t.Helper()
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("Start panicked instead of refusing: %v", r)
+			err = fmt.Errorf("panic")
+		}
+	}()
+	_, err = g.Start(context.Background())
+	return err
+}

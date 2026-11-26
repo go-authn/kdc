@@ -31,8 +31,11 @@ func (o Out) String() string {
 // Docker.
 var docker = runDocker
 
+// dockerBin is the program runDocker executes; tests point it at stand-ins.
+var dockerBin = "docker"
+
 func runDocker(ctx context.Context, stdin []byte, args ...string) (Out, error) {
-	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd := exec.CommandContext(ctx, dockerBin, args...)
 	var so, se bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &so, &se
 	if stdin != nil {

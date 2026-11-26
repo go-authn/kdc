@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
 	"strings"
 	"time"
 
@@ -94,7 +95,17 @@ func (g *GoKDC) Start(ctx context.Context) (Env, error) {
 		return Env{}, err
 	}
 	g.srv = srv
-	go func() { _ = srv.ServeTCP(ln) }()
+	go func() {
+		// A throwaway KDC of a test harness: a panic inside it must not take
+		// the test binary down unannounced, it is reported and Start's caller
+		// sees the failed exchange.
+		defer func() {
+			if r := recover(); r != nil {
+				fmt.Fprintf(os.Stderr, "go-authn/kdc server panicked: %v\n", r)
+			}
+		}()
+		_ = srv.ServeTCP(ln)
+	}()
 	port := ln.Addr().(*net.TCPAddr).Port
 	return Env{Realm: g.Realm, KDC: fmt.Sprintf("host.docker.internal:%d", port), Keytab: kt}, nil
 }
