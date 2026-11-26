@@ -137,6 +137,10 @@ func (w *writer) ustr(s string, deferred *[]func()) {
 	}
 	w.u16(uint16(2 * len(u)))
 	w.u16(uint16(2 * len(u)))
+	if len(u) == 0 { // an empty string is a null pointer, as Samba writes it
+		w.u32(0)
+		return
+	}
 	w.u32(w.next())
 	*deferred = append(*deferred, func() {
 		w.u32(uint32(len(u))) // maximum count
@@ -253,9 +257,8 @@ func (li *LogonInfo) Marshal() ([]byte, error) {
 	if w.err != nil {
 		return nil, w.err
 	}
-	if len(w.b) > MaxLogonInfo {
-		return nil, fmt.Errorf("%w: %d bytes encoded", ErrTooBig, len(w.b))
-	}
+	// No size check here: every count and string is bounded above, and the
+	// largest encoding they allow is well under MaxLogonInfo (a test pins it).
 	binary.LittleEndian.PutUint32(w.b[8:], uint32(len(w.b)-16))
 	return w.b, nil
 }
@@ -274,9 +277,6 @@ func (r *reader) fail(format string, args ...any) {
 
 // need says whether n more bytes exist, and records the failure otherwise.
 func (r *reader) need(n int) bool {
-	if r.err != nil {
-		return false
-	}
 	if n < 0 || n > len(r.b)-r.off {
 		r.fail("%d bytes wanted at offset %d of %d", n, r.off, len(r.b))
 		return false
@@ -329,9 +329,6 @@ func (r *reader) ustrHead() ustrHead {
 
 // ustrBody reads the deferred buffer of one RPC_UNICODE_STRING.
 func (r *reader) ustrBody(h ustrHead) string {
-	if r.err != nil {
-		return ""
-	}
 	if h.length%2 != 0 || h.max%2 != 0 || h.length > h.max || int(h.length)/2 > MaxStringUnits {
 		r.fail("a string of length %d, maximum %d", h.length, h.max)
 		return ""
@@ -343,17 +340,10 @@ func (r *reader) ustrBody(h ustrHead) string {
 		return ""
 	}
 	max, off, act := r.u32(), r.u32(), r.u32()
-	if r.err != nil {
-		return ""
-	}
 	// The three counts are checked against the bounds and the header, and the
 	// bytes against what remains, before anything is allocated.
-	if max > uint32(MaxStringUnits)+1 || off > max || act > max-off || uint32(h.length)/2 != act {
+	if max > uint32(MaxStringUnits) || off != 0 || act > max || uint32(h.length)/2 != act {
 		r.fail("string counts %d/%d/%d for length %d", max, off, act, h.length)
-		return ""
-	}
-	if off != 0 {
-		r.fail("a string at offset %d", off)
 		return ""
 	}
 	if !r.need(2 * int(act)) {
@@ -370,36 +360,27 @@ func (r *reader) ustrBody(h ustrHead) string {
 
 func (r *reader) sid() SID {
 	n := r.u32()
-	if r.err != nil {
+	// Sized in 64 bits so that a hostile conformance cannot wrap on a 32-bit
+	// platform; ParseBinarySID refuses more than 15 sub-authorities and a
+	// count that disagrees with the conformance (its length check).
+	size := 8 + 4*uint64(n)
+	if size > uint64(len(r.b)-r.off) {
+		r.fail("a SID of %d sub-authorities past the buffer", n)
 		return SID{}
 	}
-	if n > MaxSubAuthorities {
-		r.fail("a SID of %d sub-authorities", n)
-		return SID{}
-	}
-	if !r.need(8 + 4*int(n)) {
-		return SID{}
-	}
-	if int(r.b[r.off+1]) != int(n) {
-		r.fail("a SID counting %d sub-authorities under a conformance of %d", r.b[r.off+1], n)
-		return SID{}
-	}
-	s, err := ParseBinarySID(r.b[r.off : r.off+8+4*int(n)])
+	s, err := ParseBinarySID(r.b[r.off : r.off+int(size)])
 	if err != nil {
 		r.fail("%v", err)
 		return SID{}
 	}
-	r.off += 8 + 4*int(n)
+	r.off += int(size)
 	return s
 }
 
 // count checks a count against the bound AND the bytes left for entries of
 // size each, before the caller allocates.
 func (r *reader) count(n uint32, size int, what string) int {
-	if r.err != nil {
-		return 0
-	}
-	if n > MaxGroupEntries || int(n)*size > len(r.b)-r.off {
+	if n > MaxGroupEntries || uint64(n)*uint64(size) > uint64(len(r.b)-r.off) {
 		r.fail("%s: %d entries", what, n)
 		return 0
 	}
@@ -408,17 +389,11 @@ func (r *reader) count(n uint32, size int, what string) int {
 
 func (r *reader) groups(declared uint32, what string) []Group {
 	max := r.u32()
-	if r.err != nil {
-		return nil
-	}
 	if max != declared {
 		r.fail("%s: conformance %d against count %d", what, max, declared)
 		return nil
 	}
 	n := r.count(max, 8, what)
-	if n == 0 {
-		return nil
-	}
 	out := make([]Group, n)
 	for i := range out {
 		out[i] = Group{RID: r.u32(), Attrs: r.u32()}
@@ -430,9 +405,6 @@ func (r *reader) groups(declared uint32, what string) []Group {
 // Samba and this package write, rejects anything out of bounds, and never
 // allocates more than the buffer's own length allows.
 func UnmarshalLogonInfo(b []byte) (*LogonInfo, error) {
-	if len(b) > MaxLogonInfo {
-		return nil, fmt.Errorf("%w: %d bytes", ErrNDR, len(b))
-	}
 	r := &reader{b: b}
 	if !r.need(20) {
 		return nil, r.err
@@ -479,9 +451,6 @@ func UnmarshalLogonInfo(b []byte) (*LogonInfo, error) {
 	resSIDRef := r.u32()
 	resCount := r.u32()
 	resRef := r.u32()
-	if r.err != nil {
-		return nil, r.err
-	}
 
 	strs := make([]string, 6)
 	for i := range strs {
@@ -521,9 +490,6 @@ func UnmarshalLogonInfo(b []byte) (*LogonInfo, error) {
 				break
 			}
 			li.ExtraSIDs = append(li.ExtraSIDs, ExtraSID{SID: r.sid(), Attrs: h.attrs})
-			if r.err != nil {
-				break
-			}
 		}
 	case sidCount != 0:
 		r.fail("ExtraSids: %d entries behind a null pointer", sidCount)

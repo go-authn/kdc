@@ -44,9 +44,22 @@ type GoKDC struct {
 	// 0.0.0.0:0; tests set them to reach the refusals.
 	etype  int32
 	listen string
+
+	// PAC makes the KDC put a PAC in the ticket for cifs/Host, for a Samba
+	// that insists on one (a member server). The default issues none.
+	PAC bool
 }
 
-func (g *GoKDC) Name() string { return "go-authn/kdc" }
+// PACDomainSID is the domain SID the PAC row gives both the KDC (its config)
+// and Samba (`net setdomainsid`): LOGON_INFO's domain must be Samba's own.
+const PACDomainSID = "S-1-5-21-1111111111-2222222222-3333333333"
+
+func (g *GoKDC) Name() string {
+	if g.PAC {
+		return "go-authn/kdc (PAC)"
+	}
+	return "go-authn/kdc"
+}
 
 func (g *GoKDC) Version(context.Context) string { return "this checkout" }
 
@@ -81,12 +94,20 @@ func (g *GoKDC) Start(ctx context.Context) (Env, error) {
 	if err != nil {
 		return Env{}, err
 	}
-	srv, err := kdc.New(kdc.Config{
-		Realm:                  g.Realm,
-		People:                 onlyOne{directory.NewIdentity(User, directory.WithPassword(Pass))},
-		Services:               all,
-		AllowPasswordDerivedAS: true,
-	})
+	opts := []directory.Option{directory.WithPassword(Pass)}
+	cfg := kdc.Config{Realm: g.Realm, Services: all, AllowPasswordDerivedAS: true}
+	if g.PAC {
+		a, err := directory.NewAttributes(
+			directory.Attribute{Name: "uidNumber", Values: []string{"1001"}},
+			directory.Attribute{Name: "gidNumber", Values: []string{"1000"}})
+		if err != nil {
+			return Env{}, err
+		}
+		opts = append(opts, directory.WithAttributes(a))
+		cfg.PAC = &kdc.PAC{DomainSID: PACDomainSID, Services: []string{"cifs/" + Host}}
+	}
+	cfg.People = onlyOne{directory.NewIdentity(User, opts...)}
+	srv, err := kdc.New(cfg)
 	if err != nil {
 		return Env{}, fmt.Errorf("kdc.New: %w", err)
 	}

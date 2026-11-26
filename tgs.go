@@ -147,6 +147,12 @@ func (s *Server) serveTGS(req *messages.TGSReq, body []byte) []byte {
 		if errors.Is(err, errNeverValid) {
 			return s.krbErr(sname, errorcode.KDC_ERR_NEVER_VALID, err.Error(), nil)
 		}
+		if errors.Is(err, errNoNumber) || errors.Is(err, errRIDClash) {
+			// The service requires a PAC and this person cannot be given a
+			// sound one: refused, never a ticket without it (fail closed).
+			s.logf("kdc: no PAC for %s: %v", name[0], err)
+			return s.krbErr(sname, errorcode.KDC_ERR_POLICY, "no PAC can be issued for this client", nil)
+		}
 		return s.krbErr(sname, errorcode.KDC_ERR_SVC_UNAVAILABLE, err.Error(), nil)
 	}
 	return rep

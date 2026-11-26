@@ -9,6 +9,7 @@ import (
 	"unicode/utf16"
 
 	"github.com/jcmturner/gokrb5/v8/crypto"
+	"github.com/jcmturner/gokrb5/v8/crypto/etype"
 	"github.com/jcmturner/gokrb5/v8/types"
 )
 
@@ -135,15 +136,24 @@ type buf struct {
 }
 
 // checksum is key's mandatory checksum over data, with the PAC key usage.
-func checksum(key types.EncryptionKey, data []byte) ([]byte, error) {
-	if key.KeyType != 18 {
-		return nil, fmt.Errorf("%w: key type %d", ErrSignature, key.KeyType)
-	}
-	et, err := crypto.GetEtype(key.KeyType)
+// The key must have passed validKey: it then cannot fail, and a nil result
+// (which no signature equals) is what an impossible failure would read as.
+func checksum(key types.EncryptionKey, data []byte) []byte {
+	h, _ := aes256.GetChecksumHash(key.KeyValue, data, keyUsageAppDataCksm)
+	return h
+}
+
+var aes256 = func() etype.EType {
+	et, err := crypto.GetEtype(18)
 	if err != nil {
-		return nil, err
+		panic(err) // aes256-cts-hmac-sha1-96 is compiled into gokrb5
 	}
-	return et.GetChecksumHash(key.KeyValue, data, keyUsageAppDataCksm)
+	return et
+}()
+
+// validKey says whether key is an AES-256 key, the only type signed with.
+func validKey(key types.EncryptionKey) bool {
+	return key.KeyType == 18 && len(key.KeyValue) == 32
 }
 
 func sigBuf() []byte {
@@ -156,6 +166,9 @@ func sigBuf() []byte {
 // kdcKey (the krbtgt key) the KDC signatures, in the order MIT writes them:
 // ticket (16), full (19), server (6), KDC (7).
 func Build(in *Input, serverKey, kdcKey types.EncryptionKey) ([]byte, error) {
+	if !validKey(serverKey) || !validKey(kdcKey) {
+		return nil, fmt.Errorf("%w: a key that is not AES-256", ErrSignature)
+	}
 	if in.Logon == nil {
 		return nil, fmt.Errorf("%w: no LOGON_INFO", ErrPAC)
 	}
@@ -178,53 +191,49 @@ func Build(in *Input, serverKey, kdcKey types.EncryptionKey) ([]byte, error) {
 	}
 	bufs = append(bufs, buf{TypeServerChecksum, sigBuf()}, buf{TypeKDCChecksum, sigBuf()})
 
-	out := layout(bufs)
-	p, err := Parse(out)
-	if err != nil {
-		return nil, err
-	}
+	p := layout(bufs)
 	at := func(t uint32) []byte { b, _ := p.Buffer(t); return b }
-	if in.ServiceTicket {
-		c, err := checksum(kdcKey, in.TicketBytes)
-		if err != nil {
-			return nil, err
+	// Each signature covers the PAC as it stands when it is made: 6, 7 and
+	// 19 are zero until their turn.
+	steps := []struct {
+		typ  uint32
+		key  types.EncryptionKey
+		data func() []byte
+		skip bool
+	}{
+		{TypeTicketChecksum, kdcKey, func() []byte { return in.TicketBytes }, !in.ServiceTicket},
+		{TypeFullChecksum, kdcKey, func() []byte { return p.Raw }, !in.ServiceTicket},
+		{TypeServerChecksum, serverKey, func() []byte { return p.Raw }, false},
+		{TypeKDCChecksum, kdcKey, func() []byte { return at(TypeServerChecksum)[4:] }, false},
+	}
+	for _, s := range steps {
+		if !s.skip {
+			copy(at(s.typ)[4:], checksum(s.key, s.data()))
 		}
-		copy(at(TypeTicketChecksum)[4:], c)
-		c, err = checksum(kdcKey, out) // 6, 7 and 19 are still zero
-		if err != nil {
-			return nil, err
-		}
-		copy(at(TypeFullChecksum)[4:], c)
 	}
-	c, err := checksum(serverKey, out) // 6 and 7 zero, 19 filled
-	if err != nil {
-		return nil, err
-	}
-	copy(at(TypeServerChecksum)[4:], c)
-	c, err = checksum(kdcKey, at(TypeServerChecksum)[4:4+checksumLen])
-	if err != nil {
-		return nil, err
-	}
-	copy(at(TypeKDCChecksum)[4:], c)
-	return out, nil
+	return p.Raw, nil
 }
 
 // layout writes the PACTYPE header and the buffers, each at an 8-aligned offset.
-func layout(bufs []buf) []byte {
+func layout(bufs []buf) *PAC {
 	head := 8 + 16*len(bufs)
 	out := make([]byte, 0, head+1024)
 	out = binary.LittleEndian.AppendUint32(out, uint32(len(bufs)))
 	out = binary.LittleEndian.AppendUint32(out, 0)
 	off := (head + alignment - 1) &^ (alignment - 1)
 	body := []byte{}
+	p := &PAC{}
 	for _, b := range bufs {
+		start := off + len(body)
 		out = binary.LittleEndian.AppendUint32(out, b.typ)
 		out = binary.LittleEndian.AppendUint32(out, uint32(len(b.data)))
-		out = binary.LittleEndian.AppendUint64(out, uint64(off+len(body)))
+		out = binary.LittleEndian.AppendUint64(out, uint64(start))
 		body = pad8(append(body, b.data...))
+		p.list = append(p.list, entry{b.typ, start, start + len(b.data)})
 	}
 	out = pad8(out)
-	return append(out, body...)
+	p.Raw = append(out, body...)
+	return p
 }
 
 // A PAC is a parsed container. Its buffers alias Raw.
@@ -286,40 +295,31 @@ func (p *PAC) Buffer(t uint32) ([]byte, bool) {
 // EncTicketPart recoded with the PAC replaced by one zero byte. Only the
 // checksum type 16 is accepted: HMAC-MD5 (-138) and the rest are refused.
 func (p *PAC) Verify(serverKey, kdcKey types.EncryptionKey, wantTicketSig bool, ticketBytes []byte) error {
-	sig := func(t uint32) ([]byte, error) {
-		b, ok := p.Buffer(t)
-		if !ok {
-			return nil, fmt.Errorf("%w: no buffer %d", ErrSignature, t)
-		}
+	if !validKey(serverKey) || !validKey(kdcKey) {
+		return fmt.Errorf("%w: a key that is not AES-256", ErrSignature)
+	}
+	// Every signature wanted is present, of the one type accepted, at its size.
+	want := []uint32{TypeServerChecksum, TypeKDCChecksum}
+	if wantTicketSig {
+		want = append(want, TypeTicketChecksum, TypeFullChecksum)
+	}
+	sigs := map[uint32][]byte{}
+	for _, t := range want {
+		b, _ := p.Buffer(t) // absent: nil, refused by its length
 		if len(b) != 4+checksumLen || binary.LittleEndian.Uint32(b) != checksumAES256 {
-			return nil, fmt.Errorf("%w: buffer %d is not an AES256 checksum", ErrSignature, t)
+			return fmt.Errorf("%w: buffer %d absent or not an AES256 checksum", ErrSignature, t)
 		}
-		return b, nil
+		sigs[t] = b[4:]
 	}
 	check := func(key types.EncryptionKey, data, got []byte) error {
-		want, err := checksum(key, data)
-		if err != nil {
-			return err
-		}
-		if !hmacEqual(want, got) {
+		if !hmacEqual(checksum(key, data), got) {
 			return fmt.Errorf("%w: checksum mismatch", ErrSignature)
 		}
 		return nil
 	}
-	srv, err := sig(TypeServerChecksum)
-	if err != nil {
-		return err
-	}
-	kdc, err := sig(TypeKDCChecksum)
-	if err != nil {
-		return err
-	}
+	srv, kdc := sigs[TypeServerChecksum], sigs[TypeKDCChecksum]
 	if wantTicketSig {
-		t, err := sig(TypeTicketChecksum)
-		if err != nil {
-			return err
-		}
-		if err := check(kdcKey, ticketBytes, t[4:]); err != nil {
+		if err := check(kdcKey, ticketBytes, sigs[TypeTicketChecksum]); err != nil {
 			return fmt.Errorf("ticket: %w", err)
 		}
 	}
@@ -333,20 +333,16 @@ func (p *PAC) Verify(serverKey, kdcKey types.EncryptionKey, wantTicketSig bool, 
 	}
 	zero(TypeServerChecksum)
 	zero(TypeKDCChecksum)
-	if err := check(serverKey, cp, srv[4:]); err != nil {
+	if err := check(serverKey, cp, srv); err != nil {
 		return fmt.Errorf("server: %w", err)
 	}
 	if wantTicketSig {
-		f, err := sig(TypeFullChecksum)
-		if err != nil {
-			return err
-		}
 		zero(TypeFullChecksum)
-		if err := check(kdcKey, cp, f[4:]); err != nil {
+		if err := check(kdcKey, cp, sigs[TypeFullChecksum]); err != nil {
 			return fmt.Errorf("full: %w", err)
 		}
 	}
-	return check(kdcKey, srv[4:], kdc[4:])
+	return check(kdcKey, srv, kdc)
 }
 
 func hmacEqual(a, b []byte) bool { return len(a) == len(b) && bytes.Equal(a, b) }

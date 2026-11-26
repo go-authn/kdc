@@ -33,7 +33,13 @@ type Env struct {
 type Relaxation struct {
 	Name string
 	Role string // "server role" replacing the baseline's standalone server
-	Line string // an extra smb.conf [global] line; empty for the baseline
+	Line string // extra smb.conf [global] lines (separated by \n); empty for the baseline
+
+	// Setup are commands run in the container before smbd starts, and Daemons
+	// processes left running beside it (winbindd): what a member server needs
+	// to turn a PAC into a token with no domain controller.
+	Setup   [][]string
+	Daemons [][]string
 }
 
 // Result is one cell row of the matrix.
@@ -89,7 +95,7 @@ func (s Samba) smbConf(realm string, rx Relaxation) string {
 	b.WriteString("  log level = 10\n  log file = " + logPath + "\n  max log size = 0\n")
 	b.WriteString("  disable netbios = yes\n  smb ports = 445\n")
 	if rx.Line != "" {
-		b.WriteString("  " + rx.Line + "\n")
+		b.WriteString("  " + strings.ReplaceAll(rx.Line, "\n", "\n  ") + "\n")
 	}
 	fmt.Fprintf(&b, "\n[%s]\n  path = /srv/%s\n  read only = yes\n", Share, Share)
 	return b.String()
@@ -161,6 +167,19 @@ func (s Samba) Run(ctx context.Context, e Env, kdcName, kdcVersion string, rx Re
 	}
 	if _, err := v.Must(ctx, nil, "mkdir", "-p", "/var/log/samba"); err != nil {
 		return fail(err)
+	}
+	for _, c := range rx.Setup {
+		if _, err := v.Must(ctx, nil, c...); err != nil {
+			return fail(err)
+		}
+	}
+	for _, c := range rx.Daemons {
+		if err := v.Spawn(ctx, c...); err != nil {
+			return fail(err)
+		}
+	}
+	if len(rx.Daemons) > 0 {
+		time.Sleep(10 * pause) // winbindd needs a moment before smbd asks it
 	}
 	if err := v.Spawn(ctx, "smbd", "--foreground", "--no-process-group"); err != nil {
 		return fail(err)

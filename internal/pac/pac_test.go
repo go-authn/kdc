@@ -84,7 +84,7 @@ func TestNDRBounds(t *testing.T) {
 	b, _ := sampleLogon(t).Marshal()
 	for i := range b {
 		c := append([]byte(nil), b[:i]...)
-		if _, err := UnmarshalLogonInfo(c); err == nil {
+		if _, err := unmarshal(c); !errors.Is(err, ErrNDR) {
 			t.Fatalf("a truncation to %d bytes was accepted", i)
 		}
 	}
@@ -98,7 +98,7 @@ func TestBuildVerifyAndGokrb5Oracle(t *testing.T) {
 		UserSID: mustSID(t, "S-1-5-21-111-222-333-1001"), RequestorSID: mustSID(t, "S-1-5-21-111-222-333-1001"),
 		ServiceTicket: true, TicketBytes: []byte("the ticket with a zero in place of the PAC"),
 	}
-	b, err := Build(in, srv, kdc)
+	b, err := build(in, srv, kdc)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,31 +106,34 @@ func TestBuildVerifyAndGokrb5Oracle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := p.Verify(srv, kdc, true, in.TicketBytes); err != nil {
+	if err := verify(p, srv, kdc, true, in.TicketBytes); err != nil {
 		t.Fatal(err)
 	}
-	at, name, err := p.ClientInfo()
+	at, name, err := clientInfoOf(p)
 	if err != nil || at != 1700000000 || name != "alice" {
 		t.Errorf("CLIENT_INFO: %d %q %v", at, name, err)
 	}
 	// Each signature is bound to what it covers.
-	if err := p.Verify(srv, kdc, true, []byte("another ticket")); err == nil {
+	if err := verify(p, srv, kdc, true, []byte("another ticket")); !errors.Is(err, ErrSignature) {
 		t.Error("a ticket signature verified over another ticket")
 	}
-	if err := p.Verify(kdc, kdc, true, in.TicketBytes); err == nil {
+	if err := verify(p, kdc, kdc, true, in.TicketBytes); !errors.Is(err, ErrSignature) {
 		t.Error("the server signature verified under another key")
 	}
-	if err := p.Verify(srv, srv, true, in.TicketBytes); err == nil {
+	if err := verify(p, srv, srv, true, in.TicketBytes); !errors.Is(err, ErrSignature) {
 		t.Error("the KDC signatures verified under another key")
 	}
 	for i := 8 + 16*9; i < len(b); i++ {
 		c := append([]byte(nil), b...)
 		c[i] ^= 1
-		q, err := Parse(c)
+		q, err := parse(c)
+		if errors.Is(err, errPanicked) {
+			t.Fatalf("a flipped bit at %d: %v", i, err)
+		}
 		if err != nil {
 			continue
 		}
-		if q.Verify(srv, kdc, true, in.TicketBytes) == nil {
+		if verify(q, srv, kdc, true, in.TicketBytes) == nil {
 			// Only padding may change without breaking a signature.
 			if !isPadding(p, i) {
 				t.Fatalf("a flipped bit at %d outside any padding verified", i)
@@ -167,7 +170,7 @@ func isPadding(p *PAC, i int) bool {
 
 func TestTGTHasNoTicketSignature(t *testing.T) {
 	srv := key(2)
-	b, err := Build(&Input{Logon: sampleLogon(t), ClientName: "alice", AuthTime: time.Unix(5, 0),
+	b, err := build(&Input{Logon: sampleLogon(t), ClientName: "alice", AuthTime: time.Unix(5, 0),
 		UserSID: mustSID(t, "S-1-5-21-1-2-3-4"), RequestorSID: mustSID(t, "S-1-5-21-1-2-3-4")}, srv, srv)
 	if err != nil {
 		t.Fatal(err)
@@ -179,17 +182,17 @@ func TestTGTHasNoTicketSignature(t *testing.T) {
 	if _, ok := p.Buffer(TypeFullChecksum); ok {
 		t.Error("a TGT PAC carries a full signature")
 	}
-	if err := p.Verify(srv, srv, false, nil); err != nil {
+	if err := verify(p, srv, srv, false, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.Verify(srv, srv, true, []byte("x")); err == nil {
+	if err := verify(p, srv, srv, true, []byte("x")); !errors.Is(err, ErrSignature) {
 		t.Error("a PAC without 16 passed when 16 was required")
 	}
 }
 
 func TestHMACMD5SignatureRefused(t *testing.T) {
 	srv, kdc := key(1), key(2)
-	b, err := Build(&Input{Logon: sampleLogon(t), ClientName: "a", AuthTime: time.Unix(5, 0),
+	b, err := build(&Input{Logon: sampleLogon(t), ClientName: "a", AuthTime: time.Unix(5, 0),
 		UserSID: mustSID(t, "S-1-5-21-1-2-3-4"), RequestorSID: mustSID(t, "S-1-5-21-1-2-3-4")}, srv, kdc)
 	if err != nil {
 		t.Fatal(err)
@@ -197,13 +200,13 @@ func TestHMACMD5SignatureRefused(t *testing.T) {
 	p, _ := Parse(b)
 	s, _ := p.Buffer(TypeServerChecksum)
 	s[0], s[1], s[2], s[3] = 0x76, 0xff, 0xff, 0xff // -138, HMAC-MD5
-	if err := p.Verify(srv, kdc, false, nil); !errors.Is(err, ErrSignature) {
+	if err := verify(p, srv, kdc, false, nil); !errors.Is(err, ErrSignature) {
 		t.Errorf("HMAC-MD5 signature: %v", err)
 	}
 }
 
 func TestParseRefusals(t *testing.T) {
-	good, _ := Build(&Input{Logon: sampleLogon(t), ClientName: "a", AuthTime: time.Unix(5, 0),
+	good, _ := build(&Input{Logon: sampleLogon(t), ClientName: "a", AuthTime: time.Unix(5, 0),
 		UserSID: mustSID(t, "S-1-5-21-1-2-3-4"), RequestorSID: mustSID(t, "S-1-5-21-1-2-3-4")}, key(1), key(2))
 	for name, mut := range map[string]func([]byte){
 		"unaligned offset": func(b []byte) { b[8+8] |= 1 },
@@ -213,12 +216,14 @@ func TestParseRefusals(t *testing.T) {
 	} {
 		c := append([]byte(nil), good...)
 		mut(c)
-		if _, err := Parse(c); err == nil {
-			t.Errorf("%s: accepted", name)
+		if _, err := parse(c); err == nil || errors.Is(err, errPanicked) {
+			t.Errorf("%s: %v", name, err)
 		}
 	}
 	for i := 0; i < len(good); i++ {
-		Parse(good[:i]) // must not panic
+		if _, err := parse(good[:i]); errors.Is(err, errPanicked) {
+			t.Errorf("a truncation to %d bytes: %v", i, err)
+		}
 	}
 }
 
@@ -227,12 +232,12 @@ func TestSID(t *testing.T) {
 	if s.WithRID(7).String() != "S-1-5-21-1-2-3-7" {
 		t.Error(s.WithRID(7))
 	}
-	r, err := ParseBinarySID(s.Binary())
-	if err != nil || !r.Equal(s) {
+	r, err := parseBinary(s.Binary())
+	if err != nil || !equalSIDs(t, r, s) {
 		t.Error(r, err)
 	}
 	for _, bad := range []string{"", "S-2-5", "S-1", "S-1-5-x", "S-1-5-4294967296", "S-1-281474976710656"} {
-		if _, err := ParseSID(bad); err == nil {
+		if _, err := parseSID(bad); err == nil || errors.Is(err, errPanicked) {
 			t.Errorf("%q accepted", bad)
 		}
 	}
@@ -243,7 +248,10 @@ func FuzzLogonInfo(f *testing.F) {
 	b, _ := sampleLogon(f).Marshal()
 	f.Add(b)
 	f.Fuzz(func(t *testing.T, b []byte) {
-		li, err := UnmarshalLogonInfo(b)
+		li, err := unmarshal(b)
+		if errors.Is(err, errPanicked) {
+			t.Fatal(err)
+		}
 		if err != nil {
 			return
 		}
@@ -262,18 +270,27 @@ func FuzzLogonInfo(f *testing.F) {
 // accepts anything that was not signed with these keys.
 func FuzzPACVerify(f *testing.F) {
 	srv, kdc := key(1), key(2)
-	b, _ := Build(&Input{Logon: sampleLogon(f), ClientName: "a", AuthTime: time.Unix(5, 0),
+	b, _ := build(&Input{Logon: sampleLogon(f), ClientName: "a", AuthTime: time.Unix(5, 0),
 		UserSID: mustSID(f, "S-1-5-21-1-2-3-4"), RequestorSID: mustSID(f, "S-1-5-21-1-2-3-4")}, srv, kdc)
 	f.Add(b)
 	f.Fuzz(func(t *testing.T, b []byte) {
-		p, err := Parse(b)
+		p, err := parse(b)
+		if errors.Is(err, errPanicked) {
+			t.Fatal(err)
+		}
 		if err != nil {
 			return
 		}
-		p.ClientInfo()
-		p.Verify(srv, kdc, false, nil)
+		if _, _, err := clientInfoOf(p); errors.Is(err, errPanicked) {
+			t.Fatal(err)
+		}
+		if err := verify(p, srv, kdc, false, nil); errors.Is(err, errPanicked) {
+			t.Fatal(err)
+		}
 		if li, ok := p.Buffer(TypeLogonInfo); ok {
-			UnmarshalLogonInfo(li)
+			if _, err := unmarshal(li); errors.Is(err, errPanicked) {
+				t.Fatal(err)
+			}
 		}
 	})
 }

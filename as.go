@@ -214,8 +214,16 @@ func (s *Server) issue(body messages.KDCReqBody, cname string, sname types.Princ
 	if err != nil {
 		return nil, err
 	}
-	tkt, sessionKey, err := messages.NewTicket(client, s.cfg.Realm, sname, s.cfg.Realm,
-		tflags, s.cfg.Services, defaultEtype, kvno, authTime, start, end, time.Time{})
+	var (
+		tkt        messages.Ticket
+		sessionKey types.EncryptionKey
+	)
+	if s.wantsPAC(sname) {
+		tkt, sessionKey, err = s.pacTicket(client, sname, tflags, kvno, authTime, start, end)
+	} else {
+		tkt, sessionKey, err = messages.NewTicket(client, s.cfg.Realm, sname, s.cfg.Realm,
+			tflags, s.cfg.Services, defaultEtype, kvno, authTime, start, end, time.Time{})
+	}
 	if err != nil {
 		return nil, err
 	}
