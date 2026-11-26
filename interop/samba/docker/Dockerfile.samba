@@ -2,5 +2,5 @@
 FROM debian:trixie
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
- && apt-get install -y --no-install-recommends samba smbclient krb5-user ca-certificates \
+ && apt-get install -y --no-install-recommends samba winbind smbclient krb5-user ca-certificates \
  && rm -rf /var/lib/apt/lists/*

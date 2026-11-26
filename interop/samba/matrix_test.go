@@ -45,9 +45,23 @@ func TestSambaMatrix(t *testing.T) {
 	// server the role Samba expects a PAC from, to show what the baseline's
 	// role is what lets a PAC-less ticket through.
 	relaxations := []Relaxation{{Name: "none"}, {Name: "control: member server", Role: "member server"}}
-	kdcs := []KDC{&GoKDC{Realm: "GOAUTHN.TEST"}, &MITKDC{Realm: "MIT.TEST"}, &HeimdalKDC{Realm: "HEIMDAL.TEST"}}
+	// The PAC row: a member server (it wants a PAC), with winbindd running and
+	// the domain SID the KDC puts in LOGON_INFO set as its own. Only the KDC
+	// configured to issue a PAC is put behind it.
+	memberPAC := Relaxation{
+		Name: "member server + winbindd + domain SID", Role: "member server",
+		Line:    "idmap config * : backend = tdb\nidmap config * : range = 3000-7999",
+		Setup:   [][]string{{"net", "setdomainsid", PACDomainSID}},
+		Daemons: [][]string{{"winbindd", "--foreground", "--no-process-group"}},
+	}
+	kdcs := []KDC{&GoKDC{Realm: "GOAUTHN.TEST"}, &GoKDC{Realm: "GOAUTHNPAC.TEST", PAC: true},
+		&MITKDC{Realm: "MIT.TEST"}, &HeimdalKDC{Realm: "HEIMDAL.TEST"}}
 	var rows []Result
 	for _, k := range kdcs {
+		relaxations := relaxations
+		if g, ok := k.(*GoKDC); ok && g.PAC {
+			relaxations = []Relaxation{memberPAC}
+		}
 		t.Run(strings.ReplaceAll(k.Name(), "/", "_"), func(t *testing.T) {
 			defer k.Stop()
 			env, err := k.Start(ctx)

@@ -33,7 +33,10 @@ func TestPrepareRefusals(t *testing.T) {
 
 func TestRunRefusals(t *testing.T) {
 	e := goEnv(t)
-	for _, rx := range []Relaxation{{Name: "none"}, {Name: "member", Role: "member server"}} {
+	member := Relaxation{Name: "member+winbindd", Role: "member server",
+		Setup:   [][]string{{"net", "setdomainsid", PACDomainSID}},
+		Daemons: [][]string{{"winbindd", "--foreground", "--no-process-group"}}}
+	for _, rx := range []Relaxation{{Name: "none"}, {Name: "member", Role: "member server"}, member} {
 		failEachCall(t, fakeDocker{files: sambaFiles(t)}, func(ctx context.Context) error {
 			r := Samba{Node{Name: "s"}}.Run(ctx, e, "go", "v", rx)
 			if r.Err == "" && (!r.SmbOK || !r.TGT || r.PAC || r.TicketEnc != "Etype (skey, tkt): aes256, aes256") {

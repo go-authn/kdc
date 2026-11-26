@@ -69,6 +69,12 @@ type Config struct {
 	//
 	// ⛔ It is never given a password, a key, or a decrypted anything.
 	Logf func(format string, args ...any)
+
+	// PAC, when set, makes tickets for the listed services carry a Microsoft
+	// PAC (MS-PAC) so that a service which insists on one (Samba as a domain
+	// member) can build a token. Nil, the default, issues none: a standalone
+	// Samba refuses a ticket whose PAC carries LOGON_INFO.
+	PAC *PAC
 }
 
 // Errors a configuration can have.
@@ -99,7 +105,7 @@ func (c *Config) check() error {
 		c.Realm, 0, defaultEtype); err != nil {
 		return fmt.Errorf("%w: %w", ErrNoTGTKey, err)
 	}
-	return nil
+	return c.checkPAC()
 }
 
 // Principal name types (RFC 4120 §6.2).

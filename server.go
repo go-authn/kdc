@@ -16,6 +16,9 @@ type Server struct {
 	cfg       Config
 	lookaside *lookaside
 
+	pacOnce sync.Once
+	pacSt   *pacState
+
 	mu     sync.Mutex
 	closed bool
 	conns  map[net.Conn]struct{}
