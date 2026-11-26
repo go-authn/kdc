@@ -38,9 +38,13 @@ var Users = []struct {
 	Name string
 	UID  int
 	Pass string
+	// Keytab: the user has a keytab. Writing one changes the principal's
+	// keys, hence its password: the user who logs in with a password (bob,
+	// through pam_krb5) must not have one.
+	Keytab bool
 }{
-	{"alice", 2001, "alice-pw"},
-	{"bob", 2002, "bob-pw"},
+	{"alice", 2001, "alice-pw", true},
+	{"bob", 2002, "bob-pw", false},
 }
 
 // HostsFile is /etc/hosts of every machine; kdcIP names the KDC in use.
@@ -109,10 +113,6 @@ func MITKDCConf() string {
     max_renewable_life = 7d 0h 0m 0s
     supported_enctypes = aes256-cts-hmac-sha1-96:normal aes128-cts-hmac-sha1-96:normal
   }
-
-[logging]
-  kdc = FILE:/var/log/krb5kdc.log
-  admin_server = FILE:/var/log/kadmin.log
 `
 }
 
@@ -167,7 +167,7 @@ func SmbConf() string {
   server min protocol = SMB3
   disable netbios = yes
   smb ports = 445
-  log level = 1 auth_audit:3 auth:3 kerberos:3
+  log level = 1 auth_audit:10 auth_json_audit:10 auth:3 kerberos:3
   log file = /var/log/samba/log.smbd
   max log size = 0
 
@@ -181,17 +181,17 @@ func SmbConf() string {
 
 // UserMap is /etc/samba/usermap. quoted selects the quoted spelling of the
 // principal that contains a slash.
+//
+// Samba strips the realm from the ticket's principal and looks up
+// "WORKGROUP\<name>", so a key without the workgroup, or with the realm, never
+// matches (measured: error 13). Quoting is optional with or without the slash.
+// alice and bob need no line: their name is a Unix user of the server.
 func UserMap(quoted bool) string {
-	m := "root/" + ClientFQDN + "@" + Realm
+	m := `WORKGROUP\root/` + ClientFQDN
 	if quoted {
 		m = `"` + m + `"`
 	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "partage = %s svc-partage@%s\n", m, Realm)
-	for _, u := range Users {
-		fmt.Fprintf(&b, "%s = %s@%s\n", u.Name, u.Name, Realm)
-	}
-	return b.String()
+	return fmt.Sprintf("partage = %s WORKGROUP\\svc-partage\n", m)
 }
 
 // SpnegoConf is /etc/request-key.d/cifs.spnego.conf: the kernel's CIFS client

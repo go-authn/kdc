@@ -177,6 +177,9 @@ func (l *Lab) UseKDC(ctx context.Context, kdc KDC) error {
 		{"svc-partage", "svc-partage", Host, "/etc/krb5/svc-partage.keytab", "600", "0:0"},
 	}
 	for _, u := range Users {
+		if !u.Keytab {
+			continue
+		}
 		keytabs = append(keytabs, struct {
 			princ, src string
 			to         Node
@@ -198,7 +201,7 @@ func (l *Lab) UseKDC(ctx context.Context, kdc KDC) error {
 
 // KDCLog is the KDC's log; the harness reads what was added since a mark.
 func (l *Lab) KDCLog(ctx context.Context, kdc KDC) (string, error) {
-	o, err := l.Sh(ctx, kdc.Node(), "cat "+Quote(kdc.LogPath()))
+	o, err := l.Sh(ctx, kdc.Node(), kdc.LogCmd())
 	return o.Stdout, err
 }
 

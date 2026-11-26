@@ -37,8 +37,15 @@ func (k KDC) KeytabScript(keytab, name string) string { return k.ktadd(keytab, n
 // MaxLifeScript sets the maximum ticket life of a principal.
 func (k KDC) MaxLifeScript(name, life string) string { return k.maxlife(name, life) }
 
-// LogPath is the KDC's log, where each AS-REQ names the client principal.
-func (k KDC) LogPath() string { return k.log }
+// LogCmd is the command that prints the KDC's log, where each AS-REQ names the
+// client principal. MIT's krb5kdc, as Debian starts it, writes to the journal
+// whatever [logging] says, so its log is the unit's journal.
+func (k KDC) LogCmd() string {
+	if k.log == "" {
+		return "journalctl -u " + k.service + " --no-pager -o cat"
+	}
+	return "cat " + Quote(k.log)
+}
 
 // MIT is MIT krb5 (krb5-kdc) as Debian 13 ships it.
 func MIT() KDC {
@@ -48,7 +55,7 @@ func MIT() KDC {
 		conf:    func() (string, string) { return "/etc/krb5kdc/kdc.conf", MITKDCConf() },
 		extra:   map[string]string{"/etc/krb5kdc/kadm5.acl": "*/admin@POC.TEST *\n"},
 		create:  "test -f /var/lib/krb5kdc/principal || kdb5_util create -s -r POC.TEST -P masterkey-poc",
-		service: "krb5-kdc", log: "/var/log/krb5kdc.log",
+		service: "krb5-kdc",
 		add: func(n, p string) string {
 			if p == "" {
 				return fmt.Sprintf("kadmin.local -q %s", Quote("addprinc -randkey "+n))
@@ -59,7 +66,7 @@ func MIT() KDC {
 			return fmt.Sprintf("rm -f %s; kadmin.local -q %s", Quote(f), Quote("ktadd -k "+f+" "+n))
 		},
 		maxlife: func(n, life string) string {
-			return fmt.Sprintf("kadmin.local -q %s", Quote("modprinc -maxlife "+life+" "+n))
+			return fmt.Sprintf("kadmin.local -q %s", Quote(`modprinc -maxlife "`+life+`" `+n))
 		},
 	}
 }
@@ -110,11 +117,6 @@ func (k KDC) Setup(ctx context.Context, l *Lab) error {
 	if _, err := l.Must(ctx, n, "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "+k.Pkgs+" >/tmp/apt-kdc.log 2>&1 || (tail -20 /tmp/apt-kdc.log; exit 1)"); err != nil {
 		return err
 	}
-	if k.Name == "mit" {
-		if err := l.Put(ctx, n, "/etc/krb5.conf", "644", "0:0", KRB5Conf()); err != nil {
-			return err
-		}
-	}
 	p, c := k.conf()
 	if err := l.Put(ctx, n, p, "644", "0:0", c); err != nil {
 		return err
@@ -124,7 +126,11 @@ func (k KDC) Setup(ctx context.Context, l *Lab) error {
 			return err
 		}
 	}
-	if _, err := l.Must(ctx, n, "set -e; "+k.create+"; : > "+Quote(k.log)); err != nil {
+	trunc := ""
+	if k.log != "" {
+		trunc = "; : > " + Quote(k.log)
+	}
+	if _, err := l.Must(ctx, n, "set -e; "+k.create+trunc); err != nil {
 		return err
 	}
 	for _, pr := range Principals() {

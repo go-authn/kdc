@@ -318,7 +318,7 @@ func TestSambaConfigureEveryStepFails(t *testing.T) {
 	if err := NewLab(f, nil).SambaConfigure(context.Background(), true); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(f.calls[1].Stdin, `"root/client.poc.test@POC.TEST"`) {
+	if !strings.Contains(f.calls[1].Stdin, `"WORKGROUP\root/client.poc.test"`) {
 		t.Errorf("quoted map not installed: %q", f.calls[1].Stdin)
 	}
 	if err := NewLab(f, nil).SambaConfigure(context.Background(), false); err != nil {
@@ -367,11 +367,14 @@ func TestUseKDCEveryStepFailsButTheCleanup(t *testing.T) {
 		"chmod 600 '/etc/samba/cifs.keytab'.new",
 		"chmod 600 '/etc/krb5.keytab'.new",
 		"chmod 400 '/etc/krb5/alice.keytab'.new",
-		"chown 2002:2002 '/etc/krb5/bob.keytab'.new",
+		"chown 2001:2001 '/etc/krb5/alice.keytab'.new",
 	} {
 		if !strings.Contains(all.String(), want) {
 			t.Errorf("missing %q", want)
 		}
+	}
+	if strings.Contains(all.String(), "bob.keytab") {
+		t.Error("bob logs in with a password: a keytab would have changed it")
 	}
 }
 
@@ -380,7 +383,7 @@ func TestLogsAreRead(t *testing.T) {
 	f.reply = func(c call) Out { return Out{Stdout: c.Script} }
 	l := NewLab(f, nil)
 	s, err := l.KDCLog(context.Background(), MIT())
-	if err != nil || s != "cat '/var/log/krb5kdc.log'" || f.calls[0].Node != LXC("kdc-mit") {
+	if err != nil || s != "journalctl -u krb5-kdc --no-pager -o cat" || f.calls[0].Node != LXC("kdc-mit") {
 		t.Errorf("%q %v %v", s, err, f.calls)
 	}
 	s, err = l.SmbdLog(context.Background())
@@ -426,14 +429,14 @@ func TestKDCSetupToleratesExistingPrincipals(t *testing.T) {
 
 func TestKDCScripts(t *testing.T) {
 	m, h := MIT(), Heimdal()
-	if m.Node() != LXC("kdc-mit") || h.Node() != LXC("kdc-heimdal") || m.LogPath() == h.LogPath() {
+	if m.Node() != LXC("kdc-mit") || h.Node() != LXC("kdc-heimdal") || m.LogCmd() == h.LogCmd() || h.LogCmd() != "cat '/var/log/heimdal-kdc.log'" {
 		t.Error("nodes or logs")
 	}
 	for _, c := range []struct{ got, want string }{
 		{m.AddScript("a", ""), "kadmin.local -q 'addprinc -randkey a'"},
 		{m.AddScript("a", "pw"), "kadmin.local -q 'addprinc -pw pw a'"},
 		{m.KeytabScript("/k", "a"), "rm -f '/k'; kadmin.local -q 'ktadd -k /k a'"},
-		{m.MaxLifeScript("a", "3min"), "kadmin.local -q 'modprinc -maxlife 3min a'"},
+		{m.MaxLifeScript("a", "3min"), `kadmin.local -q 'modprinc -maxlife "3min" a'`},
 		{h.AddScript("a", ""), "kadmin -l add --random-key --use-defaults 'a'"},
 		{h.AddScript("a", "pw"), "kadmin -l add --password='pw' --use-defaults 'a'"},
 		{h.KeytabScript("/k", "a"), "rm -f '/k'; kadmin -l ext_keytab -k '/k' 'a'"},
@@ -466,15 +469,15 @@ func TestConfigs(t *testing.T) {
 		{"smb share", SmbConf(), "[partage]\n  path = /srv/partage\n"},
 		{"krb5 rdns", KRB5Conf(), "rdns = false"},
 		{"krb5 ccache", KRB5Conf(), "default_ccache_name = FILE:/tmp/krb5cc_%{uid}"},
-		{"mit kdc", MITKDCConf(), "kdc = FILE:/var/log/krb5kdc.log"},
+		{"mit kdc", MITKDCConf(), "max_life = 10h 0m 0s"},
 		{"heimdal", HeimdalKRB5Conf(), "kdc = FILE:/var/log/heimdal-kdc.log"},
 		{"hosts", HostsFile("10.0.3.12"), "10.0.3.12 kdc.poc.test kdc\n"},
 		{"hosts client", HostsFile("10.0.3.12"), "10.0.3.1 client.poc.test client\n"},
 		{"hosts samba", HostsFile("10.0.3.12"), "10.0.3.13 samba.poc.test samba\n"},
 		{"networkd", NetworkdFile("10.0.3.5"), "Address=10.0.3.5/24\nGateway=10.0.3.1\n"},
 		{"idmap", LXCIdmap, "lxc.idmap = u 0 100000 65536\nlxc.idmap = g 0 100000 65536\n"},
-		{"usermap plain", UserMap(false), "partage = root/client.poc.test@POC.TEST svc-partage@POC.TEST\nalice = alice@POC.TEST\nbob = bob@POC.TEST\n"},
-		{"usermap quoted", UserMap(true), "partage = \"root/client.poc.test@POC.TEST\" svc-partage@POC.TEST\n"},
+		{"usermap plain", UserMap(false), "partage = WORKGROUP\\root/client.poc.test WORKGROUP\\svc-partage\n"},
+		{"usermap quoted", UserMap(true), "partage = \"WORKGROUP\\root/client.poc.test\" WORKGROUP\\svc-partage\n"},
 		{"spnego", SpnegoConf(""), "create  cifs.spnego    * * /usr/sbin/cifs.upcall --keytab=/etc/krb5.keytab %k\n"},
 		{"spnego wrapped", SpnegoConf("/usr/bin/faketime -f +10m"), "* * /usr/bin/faketime -f +10m /usr/sbin/cifs.upcall --keytab"},
 		{"fstab", FstabLine(), "//samba.poc.test/partage /mnt/fstab cifs sec=krb5,vers=3.1.1,cruid=0,uid=1000,gid=1000,username=root/client.poc.test@POC.TEST,noauto,x-systemd.automount,x-systemd.idle-timeout=60,_netdev 0 0\n"},
