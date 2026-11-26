@@ -7,6 +7,9 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"github.com/jcmturner/gokrb5/v8/iana/errorcode"
+	"github.com/jcmturner/gokrb5/v8/types"
 )
 
 // Server answers Kerberos requests for one realm.
@@ -146,11 +149,31 @@ func (s *Server) ServeUDP(pc net.PacketConn) error {
 		s.mu.Unlock()
 		go func() {
 			defer func() { <-workers; s.wg.Done() }()
-			if out := s.handle(req); len(out) > 0 {
+			if out := s.udpReply(s.handle(req)); len(out) > 0 {
 				pc.WriteTo(out, addr)
 			}
 		}()
 	}
+}
+
+// maxUDPReply is the largest reply sent in a datagram. A bigger one would be
+// fragmented, and a fragmented reply to a spoofed source is an amplifier.
+// 1465 is a choice, not a standard: it keeps a PAC of a few dozen groups on
+// UDP and sends the rest to TCP. A variable so a test can move it.
+var maxUDPReply = 1465
+
+// udpReply is the reply as a datagram carries it. RFC 4120 7.2.1: a reply
+// that does not fit is replaced by KRB_ERR_RESPONSE_TOO_BIG (52), and the
+// client repeats the request over TCP. The lookaside (replay.go) still holds
+// the full reply, so the TCP request costs no second PAC. The error is a few
+// dozen bytes and answers a request that was already answered, so it reflects
+// no more than the other refusals do.
+func (s *Server) udpReply(out []byte) []byte {
+	if len(out) <= maxUDPReply {
+		return out
+	}
+	krbtgt := types.PrincipalName{NameType: nametypeSrvInst, NameString: []string{"krbtgt", s.cfg.Realm}}
+	return s.krbErr(krbtgt, errorcode.KRB_ERR_RESPONSE_TOO_BIG, "the reply does not fit a datagram: use TCP", nil)
 }
 
 // ServeTCP answers connections. Each carries a four-byte length in front of
