@@ -1,0 +1,7 @@
+# Heimdal KDC (Debian 13 package heimdal-kdc). A separate image: the MIT and
+# Heimdal KDC packages conflict.
+FROM debian:trixie
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends heimdal-kdc heimdal-clients \
+ && rm -rf /var/lib/apt/lists/*

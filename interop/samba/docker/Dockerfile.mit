@@ -1,0 +1,6 @@
+# MIT krb5 KDC (Debian 13 package krb5-kdc).
+FROM debian:trixie
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends krb5-kdc krb5-admin-server krb5-user \
+ && rm -rf /var/lib/apt/lists/*
