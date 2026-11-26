@@ -139,17 +139,12 @@ func (r *Recorder) Save(dir string) error {
 	for _, f := range fs {
 		node := strings.ReplaceAll(string(f.Node), ":", "-")
 		p := filepath.Join(dir, f.Tag, node, filepath.FromSlash(strings.TrimPrefix(f.Path, "/")))
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			return err
-		}
+		_ = os.MkdirAll(filepath.Dir(p), 0o755) // a failure resurfaces in WriteFile
 		if err := os.WriteFile(p, []byte(f.Content), 0o644); err != nil {
 			return err
 		}
 	}
-	b, err := json.MarshalIndent(fs, "", "  ")
-	if err != nil {
-		return err
-	}
+	b, _ := json.MarshalIndent(fs, "", "  ") // plain strings: cannot fail
 	return os.WriteFile(filepath.Join(dir, "index.json"), b, 0o644)
 }
 
