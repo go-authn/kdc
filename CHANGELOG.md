@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- `interop/samba`: Docker harness (skipped unless `SAMBA_INTEROP=1`) measuring
+  Samba 4.22 as a non-AD server behind go-authn/kdc, MIT krb5kdc and Heimdal.
+  Result: a standalone-role Samba accepts our PAC-less tickets.
+
 ## v0.11.0
 
 - Breaking: the password-derived AS exchange is now an explicit opt-in,

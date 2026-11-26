@@ -1,0 +1,6 @@
+# Samba 4.22 file server (Debian 13), configured at run time by the harness.
+FROM debian:trixie
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends samba smbclient krb5-user ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
