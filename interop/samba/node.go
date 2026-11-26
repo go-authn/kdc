@@ -26,7 +26,12 @@ func (o Out) String() string {
 	return strings.TrimSpace(string(o.Stdout) + string(o.Stderr))
 }
 
-func docker(ctx context.Context, stdin []byte, args ...string) (Out, error) {
+// docker runs the docker CLI. It is a variable so that tests replace it with
+// a fake that fails on demand: every refusal below is then asserted without
+// Docker.
+var docker = runDocker
+
+func runDocker(ctx context.Context, stdin []byte, args ...string) (Out, error) {
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	var so, se bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &so, &se

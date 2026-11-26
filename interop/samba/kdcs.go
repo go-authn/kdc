@@ -38,23 +38,46 @@ func (o onlyOne) Members(string) ([]string, error) { return nil, nil }
 type GoKDC struct {
 	Realm string
 	srv   *kdc.Server
+
+	// etype and listen default to aes256-cts-hmac-sha1-96 (18) and
+	// 0.0.0.0:0; tests set them to reach the refusals.
+	etype  int32
+	listen string
 }
 
 func (g *GoKDC) Name() string { return "go-authn/kdc" }
 
 func (g *GoKDC) Version(context.Context) string { return "this checkout" }
 
-func (g *GoKDC) Start(ctx context.Context) (Env, error) {
-	// The key of cifs/Host is the one thing Samba and the KDC share. It is
-	// derived from a throwaway string; kvno 1; aes256-cts-hmac-sha1-96, the
-	// one etype this KDC issues.
-	all, forSamba := keytab.New(), keytab.New()
-	for _, p := range []string{"krbtgt/" + g.Realm, "cifs/" + Host} {
-		if err := all.AddEntry(p, g.Realm, "throwaway key of "+p, time.Now(), 1, 18); err != nil {
-			return Env{}, err
+// throwawayKeys derives the KDC's keytab (krbtgt and cifs) and Samba's (cifs
+// only, marshalled) from throwaway strings, kvno 1. The key of cifs/Host is
+// the one thing Samba and the KDC share.
+func throwawayKeys(realm string, etype int32) (all *keytab.Keytab, forSamba []byte, err error) {
+	all, only := keytab.New(), keytab.New()
+	for _, p := range []string{"krbtgt/" + realm, "cifs/" + Host} {
+		for _, kt := range []*keytab.Keytab{all, only} {
+			if kt == only && p != "cifs/"+Host {
+				continue
+			}
+			if err := kt.AddEntry(p, realm, "throwaway key of "+p, time.Now(), 1, etype); err != nil {
+				return nil, nil, fmt.Errorf("key of %s: %w", p, err)
+			}
 		}
 	}
-	if err := forSamba.AddEntry("cifs/"+Host, g.Realm, "throwaway key of cifs/"+Host, time.Now(), 1, 18); err != nil {
+	forSamba, err = only.Marshal()
+	return all, forSamba, err
+}
+
+func (g *GoKDC) Start(ctx context.Context) (Env, error) {
+	etype, listen := g.etype, g.listen
+	if etype == 0 {
+		etype = 18 // the one etype this KDC issues
+	}
+	if listen == "" {
+		listen = "0.0.0.0:0"
+	}
+	all, kt, err := throwawayKeys(g.Realm, etype)
+	if err != nil {
 		return Env{}, err
 	}
 	srv, err := kdc.New(kdc.Config{
@@ -64,18 +87,14 @@ func (g *GoKDC) Start(ctx context.Context) (Env, error) {
 		AllowPasswordDerivedAS: true,
 	})
 	if err != nil {
-		return Env{}, err
+		return Env{}, fmt.Errorf("kdc.New: %w", err)
 	}
-	ln, err := net.Listen("tcp", "0.0.0.0:0")
+	ln, err := net.Listen("tcp", listen)
 	if err != nil {
 		return Env{}, err
 	}
 	g.srv = srv
 	go func() { _ = srv.ServeTCP(ln) }()
-	kt, err := forSamba.Marshal()
-	if err != nil {
-		return Env{}, err
-	}
 	port := ln.Addr().(*net.TCPAddr).Port
 	return Env{Realm: g.Realm, KDC: fmt.Sprintf("host.docker.internal:%d", port), Keytab: kt}, nil
 }

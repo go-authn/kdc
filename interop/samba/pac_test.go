@@ -5,9 +5,20 @@ package samba
 import (
 	"testing"
 
+	"github.com/jcmturner/gofork/encoding/asn1"
+	"github.com/jcmturner/gokrb5/v8/iana/adtype"
 	"github.com/jcmturner/gokrb5/v8/keytab"
 	"github.com/jcmturner/gokrb5/v8/types"
 )
+
+// ifRelevant wraps entries in an AD-IF-RELEVANT element.
+func ifRelevant(entries ...types.AuthorizationDataEntry) (types.AuthorizationDataEntry, error) {
+	b, err := asn1.Marshal(types.AuthorizationData(entries))
+	if err != nil {
+		return types.AuthorizationDataEntry{}, err
+	}
+	return types.AuthorizationDataEntry{ADType: adtype.ADIfRelevant, ADData: b}, nil
+}
 
 func TestHasPAC(t *testing.T) {
 	pac := types.AuthorizationDataEntry{ADType: adWin2KPAC, ADData: []byte{1}}

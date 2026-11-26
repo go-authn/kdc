@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/jcmturner/gofork/encoding/asn1"
 	"github.com/jcmturner/gokrb5/v8/credentials"
 	"github.com/jcmturner/gokrb5/v8/iana/adtype"
 	"github.com/jcmturner/gokrb5/v8/keytab"
@@ -74,6 +73,14 @@ func Describe(ad types.AuthorizationData) []string {
 // whether one of them is a PAC. The ticket is decoded, never inferred from the
 // name of the KDC that issued it.
 func TicketTypes(ccache []byte, kt *keytab.Keytab, service string) (adTypes []string, pac bool, err error) {
+	// gokrb5 v8.4.4 indexes into the bytes of a ccache without checking their
+	// length (CCache.Unmarshal panics on an empty input, found by
+	// FuzzTicketTypes), and this is untrusted input: a panic is a refusal.
+	defer func() {
+		if r := recover(); r != nil {
+			adTypes, pac, err = nil, false, fmt.Errorf("ccache: decoder panicked: %v", r)
+		}
+	}()
 	var cc credentials.CCache
 	if err = cc.Unmarshal(ccache); err != nil {
 		return nil, false, fmt.Errorf("ccache: %w", err)
@@ -95,13 +102,4 @@ func TicketTypes(ccache []byte, kt *keytab.Keytab, service string) (adTypes []st
 		return Describe(t.DecryptedEncPart.AuthorizationData), pac, err
 	}
 	return nil, false, errors.New("no service ticket in the credential cache")
-}
-
-// ifRelevant wraps entries in an AD-IF-RELEVANT element (for tests).
-func ifRelevant(entries ...types.AuthorizationDataEntry) (types.AuthorizationDataEntry, error) {
-	b, err := asn1.Marshal(types.AuthorizationData(entries))
-	if err != nil {
-		return types.AuthorizationDataEntry{}, err
-	}
-	return types.AuthorizationDataEntry{ADType: adtype.ADIfRelevant, ADData: b}, nil
 }

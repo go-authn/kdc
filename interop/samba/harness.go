@@ -50,7 +50,14 @@ type Result struct {
 	SmbOutput  string
 	Evidence   []string
 	Err        string
+
+	// Ccache and Keytab are the evidence the PAC verdict was decoded from; the
+	// matrix test saves them as fixtures. Not part of matrix.json.
+	Ccache, Keytab []byte `json:"-"`
 }
+
+// pause is the wait between two probes of a starting smbd; tests set it to 0.
+var pause = 200 * time.Millisecond
 
 // Samba is the file server under test: a container, so that every run starts
 // from a clean one.
@@ -162,7 +169,7 @@ func (s Samba) Run(ctx context.Context, e Env, kdcName, kdcVersion string, rx Re
 	for i := 0; i < 50 && !up; i++ {
 		o, _ := v.Run(ctx, nil, "smbcontrol", "smbd", "ping")
 		if up = o.Code == 0; !up {
-			time.Sleep(200 * time.Millisecond)
+			time.Sleep(pause)
 		}
 	}
 	if !up {
@@ -184,6 +191,7 @@ func (s Samba) Run(ctx context.Context, e Env, kdcName, kdcVersion string, rx Re
 	if err != nil {
 		return fail(err)
 	}
+	r.Ccache, r.Keytab = cc, e.Keytab
 	var kt keytab.Keytab
 	if err := kt.Unmarshal(e.Keytab); err != nil {
 		return fail(fmt.Errorf("the service keytab does not decode: %w", err))

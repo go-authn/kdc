@@ -67,6 +67,12 @@ func TestSambaMatrix(t *testing.T) {
 				rows = append(rows, r)
 				tag := strings.NewReplacer("/", "_", " ", "_").Replace(k.Name()) + "-" + rx.Name
 				_ = os.WriteFile(filepath.Join(outDir, tag+"-smbd-log10.txt"), []byte(smb.FullLog(ctx)), 0o600)
+				if rx.Role == "" {
+					// Fixtures for the offline tests: the real ccache of the run
+					// and the keytab that decrypts its service ticket.
+					_ = os.WriteFile(filepath.Join(outDir, tag+".ccache"), r.Ccache, 0o600)
+					_ = os.WriteFile(filepath.Join(outDir, tag+".keytab"), r.Keytab, 0o600)
+				}
 				t.Logf("%s [%s]: TGT=%v PAC=%v ad-types=%v smb-ok=%v code=%d err=%q", k.Name(), rx.Name, r.TGT, r.PAC, r.ADTypes, r.SmbOK, r.SmbCode, r.Err)
 				t.Logf("smbclient: %s", r.SmbOutput)
 				for _, l := range r.Evidence {
