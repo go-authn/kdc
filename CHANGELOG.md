@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.12.0
 
 - Added: `Config.PAC` and `NewDomainSID`: service tickets for the named
   services carry a PAC ([MS-PAC]: LOGON_INFO, CLIENT_INFO, UPN_DNS_INFO,
