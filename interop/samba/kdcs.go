@@ -108,7 +108,7 @@ func (g *GoKDC) Start(ctx context.Context) (Env, error) {
 			return Env{}, err
 		}
 		opts = append(opts, directory.WithAttributes(a))
-		cfg.PAC = &kdc.PAC{DomainSID: PACDomainSID, Services: []string{"cifs/" + Host}}
+		cfg.PAC = &kdc.PAC{DomainSID: PACDomainSID, NetBIOSDomain: "WORKGROUP", Services: []string{"cifs/" + Host}}
 	}
 	cfg.People = onlyOne{directory.NewIdentity(User, opts...)}
 	srv, err := kdc.New(cfg)

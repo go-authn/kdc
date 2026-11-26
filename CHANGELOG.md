@@ -11,7 +11,24 @@
 
 - `interop/samba`: Docker harness (skipped unless `SAMBA_INTEROP=1`) measuring
   Samba 4.22 as a non-AD server behind go-authn/kdc, MIT krb5kdc and Heimdal.
-  Result: a standalone-role Samba accepts our PAC-less tickets.
+  Result: a standalone-role Samba accepts our PAC-less tickets. A new row puts
+  a PAC-issuing go-authn/kdc behind a `member server` Samba with winbindd and
+  the KDC's domain SID: ACCEPTED (smbclient lists the share; Samba's log shows
+  the PAC decoded and `WORKGROUP\alice` mapped through `username map`). It
+  needs `PAC.NetBIOSDomain` equal to Samba's `workgroup`; with another value
+  Samba answers `NT_STATUS_NO_SUCH_USER`. MIT's own member-server control row
+  still fails with no domain controller (`NO_LOGON_SERVERS`).
+
+- Independent check of the signatures: `MIT_VERIFY=1 go test .` (needs Docker)
+  builds `interop/mitverify`, a C program on MIT krb5 1.21, and runs
+  `krb5_kdc_verify_ticket` (signatures 6, 7, 16, 19) and `krb5_pac_verify`
+  (CLIENT_INFO) on a ticket we issued: accepted, and refused under a wrong KDC
+  key. Samba is not that oracle: winbindd falls back to an unsigned decode.
+
+- Fuzzing found one defect before release: a non-null pointer to zero groups
+  made `LogonInfo` decode to a non-nil empty slice (round trip differed). Fixed
+  in `internal/pac/ndr.go`; the regression input and a seed corpus for
+  `FuzzLogonInfo` and `FuzzPACVerify` are committed.
 
 ## v0.11.0
 

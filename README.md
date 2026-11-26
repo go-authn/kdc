@@ -242,7 +242,10 @@ full signatures (16 and 19, CVE-2022-37967). User and group RIDs are the
 directory's `uidNumber` and `gidNumber`; a person with no `uidNumber` gets no
 ticket for such a service (fail closed), two accounts sharing a number are
 refused, groups without a `gidNumber` are left out, and at most 256 groups are
-carried. Design and measurements: [docs/design/pac.md](docs/design/pac.md).
+carried. Behind a Samba member server, set `PAC.NetBIOSDomain` to Samba's
+`workgroup` (the PAC names that domain and Samba maps `WORKGROUP\alice`
+through its `username map` or idmap). Tested against Samba 4.22, and the
+signatures against MIT's `krb5_kdc_verify_ticket`. Design and measurements: [docs/design/pac.md](docs/design/pac.md).
 
 ## The judge
 

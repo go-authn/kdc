@@ -394,6 +394,9 @@ func (r *reader) groups(declared uint32, what string) []Group {
 		return nil
 	}
 	n := r.count(max, 8, what)
+	if n == 0 { // a non-null pointer to nothing reads as no groups, as a null one does
+		return nil
+	}
 	out := make([]Group, n)
 	for i := range out {
 		out[i] = Group{RID: r.u32(), Attrs: r.u32()}

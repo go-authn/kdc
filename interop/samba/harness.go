@@ -147,7 +147,7 @@ func (s Samba) Prepare(ctx context.Context, e Env) error {
 	if err := v.WriteFile(ctx, "/srv/"+Share+"/hello.txt", "644", []byte("hello\n")); err != nil {
 		return err
 	}
-	if err := v.WriteFile(ctx, "/etc/samba/usermap", "644", []byte(User+" = "+User+"@"+e.Realm+"\n")); err != nil {
+	if err := v.WriteFile(ctx, "/etc/samba/usermap", "644", []byte(User+" = "+User+"@"+e.Realm+" WORKGROUP\\"+User+"\n")); err != nil {
 		return err
 	}
 	return v.WriteFile(ctx, "/etc/samba/cifs.keytab", "600", e.Keytab)
