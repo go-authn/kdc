@@ -43,6 +43,14 @@ func TestGroupCountRefusedBeforeAllocation(t *testing.T) {
 		if r.err == nil || !errors.Is(r.err, ErrNDR) || len(out) != 0 {
 			t.Errorf("%s: err %v, %d groups", name, r.err, len(out))
 		}
+		// TotalAlloc is the whole process's: a first call (lazy init of fmt,
+		// the runtime's own background work) read 4856 bytes on linux/386
+		// once. The guard's allocation is a property of every run, a stray
+		// one is not, so the SMALLEST of five is the measure.
+		for range 4 {
+			r2 := &reader{b: conf(c.n, c.size)}
+			got = min(got, allocated(func() { out = r2.groups(c.n, "GroupIds") }))
+		}
 		if got > 4096 {
 			t.Errorf("%s: %d bytes allocated before the refusal", name, got)
 		}
