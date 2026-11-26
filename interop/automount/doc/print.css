@@ -1,0 +1,6 @@
+pre, pre code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  font-size: 7.5pt;
+}

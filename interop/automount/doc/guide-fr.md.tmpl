@@ -1,0 +1,404 @@
+# Montage automatique Samba + Kerberos sous Debian 13 (Proxmox, LXC)
+
+Ce guide décrit une preuve de bout en bout : un client Debian 13 monte un
+partage Samba avec Kerberos (`sec=krb5`), au démarrage ou au premier accès,
+sans que personne ne tape `kinit`. Il a été exécuté contre un KDC MIT et contre
+un KDC Heimdal. **Toutes les configurations citées ci-dessous sont, mot pour
+mot, celles qui ont été installées par le banc d'essai et qui ont passé** : le
+document est produit par `TestDoc` à partir des mêmes fonctions et du
+`matrix.json` de la dernière exécution.
+
+## Ce qui a été et n'a pas été testé
+
+* `pct` n'a **pas** été exécuté : le banc tourne dans une VM Debian 13 (Tart)
+  qui joue à la fois l'hôte Proxmox (LXC non privilégiés, `lxc-attach`) et le
+  client. Les transferts de fichiers `pct pull` / `pct push` sont émulés par
+  `lxc-attach` et base64 ; les vraies commandes sont données plus bas.
+* Pas de connexion console ou graphique : le ticket de `bob` vient de
+  `pam_krb5` lors d'une connexion `ssh`.
+* Le décalage d'horloge est émulé avec `faketime` autour de `cifs.upcall`, car
+  les conteneurs partagent l'horloge de la VM.
+
+## 1. Architecture
+
+```
+                 +--------------------+
+                 |  KDC (LXC)         |   MIT : kdc-mit      10.0.3.11
+                 |  realm POC.TEST    |   Heimdal : kdc-heimdal 10.0.3.12
+                 +---------+----------+
+                           ^  AS-REQ / TGS-REQ (UDP/TCP 88)
+                           |
+ +-------------------------+---------------------------+
+ | client Debian 13 (client.poc.test, 10.0.3.1)        |
+ |  mount.cifs -> noyau CIFS -> request-key            |
+ |       -> cifs.upcall --keytab=/etc/krb5.keytab      |
+ |       -> ticket de service cifs/samba.poc.test      |
+ +-------------------------+---------------------------+
+                           | SMB 3.1.1, SPNEGO / Kerberos
+                           v
+                 +--------------------+
+                 |  Samba (LXC)       |   samba.poc.test  10.0.3.13
+                 |  partage "partage" |
+                 +--------------------+
+```
+
+## 2. Prérequis
+
+Paquets installés sur l'hôte/client :
+
+{{fence pkgs}}
+
+Les conteneurs sont des LXC **non privilégiés** avec le mappage suivant,
+ajouté à leur configuration (`/etc/pve/lxc/<ctid>.conf` sous Proxmox ne le
+demande pas, c'est le comportement par défaut ; le banc le pose dans
+`/etc/lxc/poc-base.conf`) :
+
+{{fence idmap}}
+
+Réseau d'un conteneur (`systemd-networkd`), exemple pour le serveur Samba :
+
+{{fence (networkd "10.0.3.13")}}
+
+Résolution de noms sur le client et sur Samba (le KDC est désigné par son
+adresse, le reste par `/etc/hosts`) :
+
+{{fence (hosts "10.0.3.11")}}
+
+Le fichier `/etc/krb5.conf` du client est le même pour les deux KDC :
+
+{{fence krb5}}
+
+## 3. Le KDC
+
+### 3.1 MIT (`krb5-kdc`, `krb5-admin-server`)
+
+`/etc/krb5kdc/kdc.conf` :
+
+{{fence mitkdc}}
+
+Création des principaux (le script est exécuté avec `kadmin.local`) :
+
+{{fence (mitadd "alice")}}
+
+Export d'un keytab. **`ktadd` tire une clé aléatoire et change donc le mot de
+passe du principal** : on ne l'applique pas à un utilisateur dont on veut
+garder le mot de passe (ici `bob`, qui se connecte avec `pam_krb5`).
+
+{{fence (mitkt "/etc/krb5/alice.keytab" "alice")}}
+
+Le KDC MIT de Debian journalise **dans le journal systemd**
+(`journalctl -u krb5-kdc`), quel que soit le `[logging]` du `krb5.conf` :
+le fichier configuré est resté vide.
+
+### 3.2 Heimdal (`heimdal-kdc`)
+
+`/etc/krb5.conf` du conteneur KDC :
+
+{{fence heimdal}}
+
+Création des principaux :
+
+{{fence (heimdaladd "alice")}}
+
+Export d'un keytab :
+
+{{fence (heimdalkt "/etc/krb5/alice.keytab" "alice")}}
+
+## 4. Le serveur Samba (LXC)
+
+`/etc/samba/smb.conf` :
+
+{{fence smb}}
+
+La table de correspondance (`username map`) doit accepter le principal de la
+machine `root/client.poc.test`, qui contient une barre oblique. Mesure : Samba
+retire le royaume et cherche la clé `WORKGROUP\<nom>` (source :
+`source3/auth/user_krb5.c`, puis `map_username`). La barre oblique est
+acceptée, avec ou sans guillemets ; une clé sans `WORKGROUP\`, ou avec
+`@POC.TEST`, **échoue** (erreur 13).
+
+Sans guillemets :
+
+{{fence usermap}}
+
+Avec guillemets :
+
+{{fence usermapq}}
+
+Preuve (cas U) :
+
+{{checks "U" "mit"}}
+{{evid "U" "mit" "usermap plain, WORKGROUP"}}
+{{evid "U" "mit" "usermap plain, no workgroup"}}
+
+## 5. Les vraies commandes Proxmox
+
+Sous Proxmox, les fichiers (keytab, `smb.conf`) passent entre l'hôte et un
+conteneur par `pct`, et les commandes s'exécutent avec `pct exec`. **Elles
+n'ont pas été lancées ici** ; le banc utilise `lxc-attach` et base64, ce qui
+revient à `pct pull` puis `pct push`.
+
+```
+# lancer une commande dans le conteneur Samba (ctid 103)
+pct exec 103 -- systemctl restart smbd
+
+# récupérer le keytab de la machine sur le KDC (ctid 101)
+pct exec 101 -- kadmin.local -q "ktadd -k /root/client.keytab root/client.poc.test"
+pct pull 101 /root/client.keytab /root/client.keytab
+
+# le poser sur le client (ctid 110), propriétaire root, mode 0600
+pct push 110 /root/client.keytab /etc/krb5.keytab --perms 0600 --user 0 --group 0
+```
+
+Si le client est un conteneur, `cifs.upcall` s'exécute dans l'espace de noms
+de l'hôte (le noyau l'appelle via `request-key`) : le montage CIFS d'un LXC
+non privilégié n'est pas possible sans configuration supplémentaire. Le plus
+simple est de monter sur l'hôte Proxmox ou dans une VM.
+
+## 6. Le client : trois méthodes
+
+### 6.0 Commun : `cifs.upcall` avec le keytab de la machine
+
+Le noyau appelle `cifs.upcall` par `request-key`. Le paramètre `--keytab`
+indique le keytab de repli quand l'utilisateur n'a pas de ticket.
+`/etc/request-key.d/cifs.spnego.conf` :
+
+{{fence spnego}}
+
+Le principal de la machine est `root/client.poc.test@POC.TEST`, exporté dans
+`/etc/krb5.keytab` (mode 0600, propriétaire root).
+
+**Quel principal `cifs.upcall` essaie-t-il ?** Source : `cifs.upcall.c`
+(cifs-utils). Si aucun cache utilisable n'existe et que `username=` est
+renseigné, `init_cc_from_keytab(keytab, username)` demande un ticket pour
+exactement ce nom, et lui seul. Sans `username=`, `mount.cifs` retombe sur
+`$USER`, donc sur `root@POC.TEST`, qui n'existe pas dans le KDC. Le principal de
+service est `cifs/<hôte tel que saisi>`. Il faut donc écrire
+`username=root/client.poc.test@POC.TEST` :
+
+{{checks "A3" "mit"}}
+{{evid "A3" "mit" "cifs.upcall"}}
+
+### 6.1 Méthode (a) : ligne `/etc/fstab` avec `x-systemd.automount`
+
+`/etc/fstab` :
+
+{{fence fstab}}
+
+Résultat, KDC MIT :
+
+{{checks "A1" "mit"}}
+{{evid "A1" "mit" "findmnt"}}
+{{evid "A1" "mit" "klist"}}
+{{evid "A1" "mit" "smbd"}}
+
+Résultat, KDC Heimdal :
+
+{{checks "A1" "heimdal"}}
+{{evid "A1" "heimdal" "findmnt"}}
+{{evid "A1" "heimdal" "smbd"}}
+
+### 6.2 Méthode (b) : autofs
+
+`/etc/auto.master.d/poc.autofs` (une ligne) :
+
+{{fence automaster}}
+
+`/etc/auto.poc` :
+
+{{fence automap}}
+
+Résultat, KDC MIT :
+
+{{checks "A2" "mit"}}
+{{evid "A2" "mit" "findmnt"}}
+{{evid "A2" "mit" "smbd"}}
+
+Résultat, KDC Heimdal :
+
+{{checks "A2" "heimdal"}}
+{{evid "A2" "heimdal" "findmnt"}}
+
+### 6.3 Compte de service `svc-partage`, ticket entretenu par systemd
+
+Quand on préfère un compte de service au principal de la machine : un service
+oneshot renouvelle le ticket, un timer le relance.
+
+`/etc/systemd/system/krb5-svc-partage.service` :
+
+{{fence renewsvc}}
+
+`/etc/systemd/system/krb5-svc-partage.timer` :
+
+{{fence renewtimer}}
+
+Résultat, KDC MIT :
+
+{{checks "B" "mit"}}
+{{evid "B" "mit" "klist"}}
+{{evid "B" "mit" "findmnt"}}
+
+Résultat, KDC Heimdal :
+
+{{checks "B" "heimdal"}}
+
+### 6.4 Plusieurs utilisateurs : `multiuser,sec=krb5`
+
+Avec `multiuser`, chaque utilisateur Unix accède au partage avec **son**
+ticket. `alice` (uid 2001) obtient son ticket d'un keytab personnel
+(`kinit -k -t /etc/krb5/alice.keytab`), `bob` (uid 2002) d'`pam_krb5` à la
+connexion `ssh`. `libpam-krb5` s'inscrit dans `common-auth`, `common-account`,
+`common-password` et `common-session` avec `minimum_uid=1000` (installation du
+paquet, `pam-auth-update`) ; `sshd` a `UsePAM yes`.
+
+Piège : lors du montage `multiuser`, le noyau fait une seconde ouverture de
+session pour l'uid 0. Sans ticket pour root, `cifs.upcall` échoue (« No Kerberos
+credentials available ») et le montage donne l'erreur 13. Root obtient donc
+d'abord son ticket du keytab de la machine
+(`kinit -k -t /etc/krb5.keytab root/client.poc.test@POC.TEST`).
+
+Autre piège : `chpasswd` passe par PAM, donc par `pam_krb5`, et tenterait de
+changer un mot de passe Kerberos ; le banc crée les comptes avec `useradd -p`.
+
+Résultat, KDC MIT :
+
+{{checks "C" "mit"}}
+{{evid "C" "mit" "alice reads"}}
+{{evid "C" "mit" "bob: ssh"}}
+{{evid "C" "mit" "nobody"}}
+
+Résultat, KDC Heimdal :
+
+{{checks "C" "heimdal"}}
+
+## 7. Vérifier
+
+Pour chaque cas, quatre preuves :
+
+1. `findmnt -t cifs` montre `sec=krb5` ;
+2. `klist` : aucun cache pour la méthode du keytab de la machine (personne n'a
+   lancé `kinit`) ;
+3. le journal de `smbd` contient `Successful AuthZ: [SMB2,krb5]` et aucune
+   ligne NTLMSSP ;
+4. le journal du KDC nomme le principal qui a demandé le ticket.
+
+## 8. Cas négatifs
+
+### 8.1 Montage par adresse IP : pas de repli NTLM
+
+Avec `sec=krb5`, le principal de service est `cifs/<hôte saisi>` : par IP, le
+KDC répond `LOOKING_UP_SERVER` et le montage échoue (`mount error(126):
+Required key not available`). Le serveur, lui, **accepterait** NTLM : le
+contrôle positif le montre, avec `Successful AuthZ: [SMB2,NTLMSSP]`. Il n'y a
+donc pas de repli silencieux vers NTLM.
+
+{{checks "N1" "mit"}}
+{{evid "N1" "mit" "sec=krb5 by IP"}}
+{{evid "N1" "mit" "control"}}
+
+Heimdal :
+
+{{checks "N1" "heimdal"}}
+
+### 8.2 Horloge décalée de plus de 5 minutes
+
++4 minutes : le montage réussit. +10 minutes avec le `krb5.conf` installé :
+**il réussit aussi**, parce que libkrb5 se resynchronise sur l'heure du KDC
+(`kdc_timesync`, activé par défaut). Pour observer le refus, on désactive la
+resynchronisation (`kdc_timesync = 0`) :
+
+{{fence nosync}}
+
+Le montage est alors refusé (`krb5_get_init_creds_keytab: -1765328236`,
+`KRB5_KDCREP_SKEW`, « Clock skew too great in KDC reply »).
+
+{{checks "N2" "mit"}}
+{{evid "N2" "mit" "+10 minutes, kdc_timesync = 0"}}
+{{evid "N2" "mit" "same clock"}}
+
+Heimdal :
+
+{{checks "N2" "heimdal"}}
+
+### 8.3 Ticket de 3 minutes : réacquisition
+
+Les durées de vie sont ramenées à 3 minutes (`modprinc -maxlife` pour MIT).
+Après 200 secondes, le ticket du compte de service a été renouvelé par le
+timer, celui d'`alice` (sans timer) a expiré. On redémarre `smbd` : les
+montages de la machine et du compte de service se reconnectent, le contrôle
+`alice` sans timer **ne se reconnecte pas**.
+
+Remarque mesurée : le montage du keytab de la machine et celui du compte de
+service partagent la session noyau (même serveur, même `cruid`), de sorte que la
+reconnexion du premier n'a pas produit de requête AS pour
+`root/client.poc.test`.
+
+{{checks "N3" "mit"}}
+{{evid "N3" "mit" "t0+200s: ccache of the service"}}
+{{evid "N3" "mit" "t0+200s: ccache of alice"}}
+{{evid "N3" "mit" "smbd restarted: /mnt/n3c"}}
+
+Heimdal :
+
+{{checks "N3" "heimdal"}}
+
+### 8.4 Keytab en mode 0644
+
+Un keytab lisible par tous est un secret de la machine lisible par tous :
+n'importe quel utilisateur local obtient un ticket de la machine.
+
+{{checks "N4" "mit"}}
+{{evid "N4" "mit" "0644: alice"}}
+{{evid "N4" "mit" "0600"}}
+
+Heimdal :
+
+{{checks "N4" "heimdal"}}
+
+## 9. Tableau des résultats
+
+| Cas | Description | MIT | Heimdal |
+|-----|-------------|-----|---------|
+| U  | {{title "U"}} | {{cell "U" "mit"}} | {{cell "U" "heimdal"}} |
+| A1 | {{title "A1"}} | {{cell "A1" "mit"}} | {{cell "A1" "heimdal"}} |
+| A2 | {{title "A2"}} | {{cell "A2" "mit"}} | {{cell "A2" "heimdal"}} |
+| A3 | {{title "A3"}} | {{cell "A3" "mit"}} | {{cell "A3" "heimdal"}} |
+| B  | {{title "B"}} | {{cell "B" "mit"}} | {{cell "B" "heimdal"}} |
+| C  | {{title "C"}} | {{cell "C" "mit"}} | {{cell "C" "heimdal"}} |
+| N1 | {{title "N1"}} | {{cell "N1" "mit"}} | {{cell "N1" "heimdal"}} |
+| N2 | {{title "N2"}} | {{cell "N2" "mit"}} | {{cell "N2" "heimdal"}} |
+| N3 | {{title "N3"}} | {{cell "N3" "mit"}} | {{cell "N3" "heimdal"}} |
+| N4 | {{title "N4"}} | {{cell "N4" "mit"}} | {{cell "N4" "heimdal"}} |
+
+## 10. Pièges rencontrés
+
+* **`username=`** : sans lui, `cifs.upcall` essaie `root@REALM`, pas le
+  principal de la machine.
+* **`username map`** : clé `WORKGROUP\root/client.poc.test` ; sans le groupe de
+  travail ou avec `@REALM`, erreur 13.
+* **Montage par IP** : échoue, pas de repli NTLM.
+* **Horloge** : `kdc_timesync` masque un décalage ; code `-1765328236` quand il
+  est coupé.
+* **Durée de vie** : un ticket sans timer expire, la reconnexion échoue.
+* **Keytab en 0644** : tout utilisateur local peut s'authentifier comme la
+  machine.
+* **`log level`** : le KDC MIT de Debian journalise dans journald, pas dans le
+  fichier du `[logging]`.
+* **`ktadd`** change la clé, donc le mot de passe, du principal.
+* **`chpasswd`** sous `pam_krb5` tente de changer le mot de passe Kerberos.
+* **`multiuser`** : root doit avoir un ticket avant le montage.
+
+## 11. Sécurité
+
+* Le keytab `/etc/krb5.keytab` **est le secret de la machine** : qui le lit
+  est la machine. Mode 0600, propriétaire root, jamais dans une sauvegarde
+  non chiffrée, jamais dans un dépôt.
+* Dans un LXC, il n'y a pas de TPM : le keytab repose sur le disque. Protéger le
+  stockage de l'hôte Proxmox (chiffrement du volume) et limiter l'accès à
+  `pct pull` / `pct enter`.
+* Un principal par machine (`root/<fqdn>`), et non un principal partagé ; le
+  compte de service `svc-partage` n'a que les droits du partage.
+* Le serveur Samba doit refuser NTLM pour que le repli silencieux soit
+  impossible (ici, le contrôle N1 l'accepte volontairement pour prouver que
+  le refus vient de Kerberos).
+* Ne jamais mettre de mot de passe dans une ligne `fstab` ou une unité systemd.
