@@ -21,6 +21,9 @@ type Server struct {
 
 	pacOnce sync.Once
 	pacSt   *pacState
+	// started is when New ran: unmarked TGTs older than it are the ones issued
+	// before the upgrade (D7).
+	started time.Time
 
 	mu     sync.Mutex
 	closed bool
@@ -43,7 +46,7 @@ func New(cfg Config) (*Server, error) {
 	if err := cfg.check(); err != nil {
 		return nil, err
 	}
-	return &Server{cfg: cfg, lookaside: newLookaside(), conns: make(map[net.Conn]struct{}), perPeer: make(map[string]int)}, nil
+	return &Server{cfg: cfg, started: now(), lookaside: newLookaside(), conns: make(map[net.Conn]struct{}), perPeer: make(map[string]int)}, nil
 }
 
 // peerKey names the source a connection is counted against: its IP address,

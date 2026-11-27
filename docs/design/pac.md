@@ -3,8 +3,9 @@
 Status: IMPLEMENTED (opt-in, `Config.PAC`) with deviations: the default is
 `pac = none` (D6 amended: standalone Samba refuses LOGON_INFO), the PAC is built
 at service-ticket time from the directory rather than copied from a TGT (TGTs
-carry no PAC, so D5 and TGS-side PAC verification do not arise), and D7
-(S-1-18-1) is not applied. Decided on 2026-11-26: go-authn/kdc issues a
+carry no PAC, so D5 and TGS-side PAC verification do not arise; v0.13.0 marks
+them with a signed CAMMAC instead), and D7 is applied as amended in
+[pac-d7.md](pac-d7.md) (S-1-18-1 on every PAC, plus a minted SID). Decided on 2026-11-26: go-authn/kdc issues a
 PAC. This document covers what to build and how to prove it works. It ends
 with the decisions that are the owner's to make.
 
@@ -357,7 +358,7 @@ because it has no LOGON_INFO. See D6.
 | **PAC forgery by a client.** | The PAC is inside the encrypted ticket. Changing it needs the service key (service ticket) or the krbtgt key (TGT). Signatures 6 and 7 are checked at the TGS on every TGT ([MS-PAC] §4.1.1). |
 | **Forgery by a service-key holder.** It can rewrite the PAC of tickets for ITS service; nothing stops that, and the same holds for Windows. It cannot make the KDC re-sign it: the TGS accepts only TGTs of this realm (`tgs.go:62-72`). | Signatures 16 and 19 are emitted anyway, for when S4U or renewal arrive (CVE-2020-17049 / 2022-37967 class). |
 | **The krbtgt key extracted from the keytab.** Everything is forgeable. | Out of scope for the PAC. `realm.go:30-35` already says that file is the KDC's alone. |
-| **Name confusion (CVE-2021-42287 class).** A TGT for name N is presented after N was deleted and re-created for someone else, or renamed. | **NOT DEFENDED TODAY (v0.12.x).** TGTs carry no PAC, so there is no REQUESTOR_SID in a TGT for the TGS to check, and service tickets no longer carry buffer 18 either (TGT-only, [MS-KILE] §3.3.5.6.4.8). The defence below is the design, to be built with D7 (go-authn/kdc#54, `docs/design/pac-d7.md`). Design: REQUESTOR_SID in every TGT. The TGS refuses KDC_ERR_TGT_REVOKED unless the directory gives N the SAME SID now ([MS-KILE] §3.3.5.7). This works only if a re-created person gets a NEW RID; option C would break it, option A is as good as the directory's uidNumber reuse policy (D2). |
+| **Name confusion (CVE-2021-42287 class).** A TGT for name N is presented after N was deleted and re-created for someone else, or renamed. | **DEFENDED since v0.13.0 (PAC realms), not in v0.12.x.** TGTs carry no PAC, so instead of a REQUESTOR_SID the TGT carries the requestor's uidNumber in a signed CAMMAC (`docs/design/pac-d7.md`); the TGS refuses KDC_ERR_TGT_REVOKED when the directory gives the name another uidNumber. Original design (REQUESTOR_SID, superseded): REQUESTOR_SID in every TGT. The TGS refuses KDC_ERR_TGT_REVOKED unless the directory gives N the SAME SID now ([MS-KILE] §3.3.5.7). This works only if a re-created person gets a NEW RID; option C would break it, option A is as good as the directory's uidNumber reuse policy (D2). |
 | **Collision between a local login and a federated eppn**, both arriving through a `directory.Set`. | The RID uniqueness check covers it. SamName and UPN are different strings. |
 | **Downgrade: RC4/HMAC_MD5.** | Never produced. The TGS verifier accepts only SignatureType 16 with an etype 18 key, so the §3 sample PAC (HMAC_MD5) must be refused. |
 | **Downgrade: a PAC-less TGT** presented after PAC issuance is on. | Refused once the transition window ends (D5). |

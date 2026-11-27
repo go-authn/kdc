@@ -240,8 +240,19 @@ cfg.PAC = &kdc.PAC{DomainSID: sid, Services: []string{"cifs/files.example.org"}}
 
 Those services' tickets carry `KERB_VALIDATION_INFO`, `CLIENT_INFO`, the
 UPN/DNS info and the server, KDC, ticket and full signatures (16 and 19,
-CVE-2022-37967). TGTs carry no PAC, so the CVE-2021-42287 name-confusion
-defence is not in place yet (design: `docs/design/pac-d7.md`). User and group RIDs are the
+CVE-2022-37967). TGTs carry no PAC, but with `Config.PAC` set every TGT carries
+a signed marking (an RFC 8129 CAMMAC in the krbtgt key, MIT's format): the
+requestor's `uidNumber` and, for a bridge login, the method. The TGS refuses
+(`KDC_ERR_TGT_REVOKED`) a TGT whose name now belongs to an account with another
+`uidNumber`, which is the CVE-2021-42287 name-confusion defence; a forged or
+unsigned marking is `KRB_AP_ERR_MODIFIED`. Every PAC then carries S-1-18-1
+(authentication authority asserted identity) and the D bit; a bridge-minted TGT
+adds a domain SID `<domain>-<MintedRID>` (default 1073741824). Minting
+(`MintRequest.Method`: `passkey`, `federated` or `machine`) requires the method
+when the PAC is on. TGTs issued before the upgrade carry no marking and are
+accepted for `PAC.UnmarkedWindow` (default and maximum 10 h) after the KDC
+starts, as password logons without the minted SID; `PAC.RefuseUnmarked` refuses
+them at once. Design: `docs/design/pac-d7.md`. User and group RIDs are the
 directory's `uidNumber` and `gidNumber`; a person with no `uidNumber` gets no
 ticket for such a service (fail closed), two accounts sharing a number are
 refused, groups without a `gidNumber` are left out, and at most 256 groups are

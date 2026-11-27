@@ -162,6 +162,11 @@ func TestServiceTicketPACHasNoDBitWithoutExtraSidsAndNoTGTBuffers(t *testing.T) 
 	if len(li.ExtraSIDs) == 0 && li.UserFlags&0x20 != 0 {
 		t.Errorf("D bit set (UserFlags %#x) with no ExtraSids", li.UserFlags)
 	}
+	// D7: a password logon is "authentication authority asserted" (S-1-18-1), so
+	// ExtraSids is never empty and the D bit always follows.
+	if got := extraSIDs(li); len(got) != 1 || got[0] != "S-1-18-1" || li.UserFlags&0x20 == 0 {
+		t.Errorf("ExtraSids %v, UserFlags %#x: want [S-1-18-1] with the D bit", got, li.UserFlags)
+	}
 	for _, typ := range []uint32{pac.TypeAttributesInfo, pac.TypeRequestorSID} {
 		if _, ok := p.Buffer(typ); ok {
 			t.Errorf("a service ticket PAC carries buffer %d", typ)

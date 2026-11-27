@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/go-authn/kdc/internal/cammac"
 	"github.com/jcmturner/gofork/encoding/asn1"
 	"github.com/jcmturner/gokrb5/v8/iana/flags"
 	"github.com/jcmturner/gokrb5/v8/messages"
@@ -57,6 +58,11 @@ type MintRequest struct {
 	// LifetimeSeconds is how long the caller wants the TGT to last; zero means
 	// as long as allowed. It is capped, never extended.
 	LifetimeSeconds int64 `json:"lifetime_seconds,omitempty"`
+	// Method is how the person logged in, which the KDC cannot know: passkey,
+	// federated or machine. It is required when [Config.PAC] is set (it becomes
+	// the TGT's authentication indicator and the PAC's minted SID), never
+	// defaulted; optional, but checked, otherwise.
+	Method string `json:"method,omitempty"`
 }
 
 // Errors Mint reports.
@@ -79,8 +85,13 @@ func (s *Server) Mint(req MintRequest) ([]byte, error) {
 	if err := mintablePrincipal(req.Principal); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrMintRefused, err)
 	}
+	indicator, known := mintMethods[req.Method]
+	if (req.Method != "" && !known) || (req.Method == "" && s.cfg.PAC != nil) {
+		return nil, ErrMintBadMethod
+	}
 	name := types.PrincipalName{NameType: nametypePrincipal, NameString: []string{req.Principal}}
-	if _, err := s.lookup(name); err != nil {
+	id, err := s.lookup(name)
+	if err != nil {
 		if errors.Is(err, errDirectoryDown) {
 			return nil, err
 		}
@@ -105,8 +116,18 @@ func (s *Server) Mint(req MintRequest) ([]byte, error) {
 	fl := types.NewKrbFlags()
 	types.SetFlag(&fl, flags.Initial)
 	types.SetFlag(&fl, flags.PreAuthent)
-	tkt, session, err := messages.NewTicket(name, s.cfg.Realm, krbtgt, s.cfg.Realm,
-		fl, s.cfg.Services, defaultEtype, kvno, start, start, end, time.Time{})
+	var (
+		tkt     messages.Ticket
+		session types.EncryptionKey
+	)
+	if s.pacState() != nil {
+		// D7: the TGT says it was minted, how, and for which uidNumber.
+		tkt, session, err = s.newTGT(name, fl, start, start, end,
+			cammac.Claims{Methods: []string{indicator}, UID: uidOf(id)})
+	} else {
+		tkt, session, err = messages.NewTicket(name, s.cfg.Realm, krbtgt, s.cfg.Realm,
+			fl, s.cfg.Services, defaultEtype, kvno, start, start, end, time.Time{})
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -220,6 +241,9 @@ func (s *Server) MintHandler() http.Handler {
 		}
 		cred, err := s.Mint(req)
 		switch {
+		case errors.Is(err, ErrMintBadMethod):
+			http.Error(w, "method must be one of passkey, federated, machine", http.StatusBadRequest)
+			return
 		case errors.Is(err, ErrMintRefused):
 			s.logf("kdc: mint: %s asked for %q: %v", caller, req.Principal, err)
 			http.Error(w, "refused", http.StatusForbidden)
