@@ -190,6 +190,26 @@ func TestTGTHasNoTicketSignature(t *testing.T) {
 	}
 }
 
+// Buffers 17 and 18 are TGT-only ([MS-KILE] 3.3.5.6.4.7-8, 3.3.5.7.9).
+func TestAttributesAndRequestorAreTGTOnly(t *testing.T) {
+	srv := key(2)
+	sid := mustSID(t, "S-1-5-21-1-2-3-4")
+	for _, svc := range []bool{false, true} {
+		in := &Input{Logon: sampleLogon(t), ClientName: "alice", AuthTime: time.Unix(5, 0),
+			UserSID: sid, RequestorSID: sid, ServiceTicket: svc, TicketBytes: []byte("x")}
+		b, err := build(in, srv, srv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p, _ := Parse(b)
+		for _, typ := range []uint32{TypeAttributesInfo, TypeRequestorSID} {
+			if _, ok := p.Buffer(typ); ok == svc {
+				t.Errorf("ServiceTicket=%v: buffer %d present=%v", svc, typ, ok)
+			}
+		}
+	}
+}
+
 func TestHMACMD5SignatureRefused(t *testing.T) {
 	srv, kdc := key(1), key(2)
 	b, err := build(&Input{Logon: sampleLogon(t), ClientName: "a", AuthTime: time.Unix(5, 0),

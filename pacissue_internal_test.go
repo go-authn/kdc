@@ -143,6 +143,32 @@ func TestAServiceThatWantsAPACGetsOneThatVerifies(t *testing.T) {
 	}
 }
 
+// The D bit (LOGON_EXTRA_SIDS, [MS-PAC] 2.5) is set only with ExtraSids, and a
+// service ticket carries neither buffer 17 nor 18 (TGT-only, [MS-KILE]
+// 3.3.5.6.4.7-8).
+func TestServiceTicketPACHasNoDBitWithoutExtraSidsAndNoTGTBuffers(t *testing.T) {
+	s, kt := pacServer(t, peopleList{person(t, "alice", "1001", "1000")}, &PAC{DomainSID: testDomainSID, Services: []string{"nfs/localhost"}})
+	tkt, _ := nfsTicket(t, s, kt)
+	pb, _ := pacOf(t, tkt)
+	p, err := pac.Parse(pb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := p.Buffer(pac.TypeLogonInfo)
+	li, err := pac.UnmarshalLogonInfo(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(li.ExtraSIDs) == 0 && li.UserFlags&0x20 != 0 {
+		t.Errorf("D bit set (UserFlags %#x) with no ExtraSids", li.UserFlags)
+	}
+	for _, typ := range []uint32{pac.TypeAttributesInfo, pac.TypeRequestorSID} {
+		if _, ok := p.Buffer(typ); ok {
+			t.Errorf("a service ticket PAC carries buffer %d", typ)
+		}
+	}
+}
+
 func TestAServiceNotListedGetsNoPAC(t *testing.T) {
 	for name, p := range map[string]*PAC{"default": nil, "other service": {DomainSID: testDomainSID, Services: []string{"http/other"}}} {
 		s, kt := pacServer(t, peopleList{person(t, "alice", "1001", "1000")}, p)
