@@ -1,6 +1,7 @@
 # Design: D7, the asserted-identity SID for minted tickets
 
-Status: DESIGN, not implemented. It makes decision D7 of
+Status: DESIGN, all decisions accepted 2026-11-27 (see "Decisions taken");
+implementation follows in go-authn/kdc PRs. It makes decision D7 of
 [pac.md](pac.md) implementable. pac.md lines 3-7 say D7 "is not applied" and
 give no reason. This document gives the reason, proposes a mechanism, and lists
 the decisions that are the owner's.
@@ -265,7 +266,35 @@ and every rotation now has two keys to keep in step.
   table and [MS-KILE] §3.3.5.7.9 (as pac.md cites it) say TGT only. This was not
   checked against the spec here.
 
-## Decisions for the owner
+## Decisions taken (2026-11-27)
+
+The owner accepted every recommendation below. This section is binding; the
+table that follows is the record of the options.
+
+- **U1.** S-1-18-1 for BOTH password-AS and minted tickets
+  ([MS-KILE] §3.3.5.6.4.1 SHOULD), plus a separate domain-relative SID that
+  marks minted tickets. S-1-18-2 is never put on a password logon. The draft
+  above had the two SIDs swapped relative to [MS-KILE] §3.3.5.6.4.1 and
+  [MS-SFU] §3.2.5.1.2; the paragraph "D7 as relayed" is superseded.
+- **U2.** RFC 8129 authentication indicator inside a CAMMAC (RFC 7751 format as
+  MIT writes it) signed with the krbtgt key. The TGS verifies it, copies it into
+  every reissued TGT, and turns it into ExtraSids.
+- **U3.** The bridge tells the KDC which login method it saw, from a closed
+  list (an unknown value is refused, never defaulted). The bridge also mints
+  for federated and machine logins. The bridge side lives in go-authn/bridge
+  and follows the kdc release.
+- **U4.** Unmarked pre-upgrade TGTs are accepted, as unmarked, for at most 10 h.
+- **U5.** The indicator in service tickets is opt-in, after the Samba/Windows
+  harness shows a CAMMAC is ignored there.
+- **U6.** No HW-AUTHENT for now.
+- **U7.** The requestor's uidNumber travels in the CAMMAC, and the TGS compares
+  it with the directory (CVE-2021-42287 requestor check). Implemented.
+
+Already fixed in v0.12.2 (go-authn/kdc#55): the D bit with empty ExtraSids, and
+buffers 17/18 in service tickets. pac.md no longer claims a defence that is not
+in place.
+
+## Decisions for the owner (options record)
 
 | # | Decision | Recommendation |
 |---|---|---|
