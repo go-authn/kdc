@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -586,21 +587,21 @@ func TestNewTGTRefusesWhateverFailsWhileMakingIt(t *testing.T) {
 	if err := empty.AddEntry("nfs/localhost", testRealm, "x", time.Now(), 2, 18); err != nil {
 		t.Fatal(err)
 	}
-	s2 := *s
-	s2.cfg.Services = empty
-	if err := mk(&s2); err == nil {
-		t.Error("no krbtgt key: a ticket")
+	real := s.cfg.Services
+	s.cfg.Services = empty
+	if err := mk(s); err == nil || !strings.Contains(err.Error(), "no krbtgt key") {
+		t.Errorf("no krbtgt key: %v", err)
 	}
 	// A krbtgt key whose type cannot carry a CAMMAC checksum (rc4-hmac).
 	rc4 := keytab.New()
 	if err := rc4.AddEntry("krbtgt/"+testRealm, testRealm, "x", time.Now(), 2, 23); err != nil {
 		t.Fatal(err)
 	}
-	s3 := *s
-	s3.cfg.Services = rc4
-	if err := mk(&s3); err == nil {
+	s.cfg.Services = rc4
+	if err := mk(s); err == nil {
 		t.Error("an rc4 krbtgt key: a ticket")
 	}
+	s.cfg.Services = real
 	// A marking the container cannot say (an unknown method).
 	if _, _, err := s.newTGT(aliceName, types.NewKrbFlags(), n, n, n.Add(time.Hour), cammac.Claims{Methods: []string{"nope"}}); err == nil {
 		t.Error("an unsayable marking: a ticket")

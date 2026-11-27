@@ -270,11 +270,7 @@ func FuzzCAMMACDecode(f *testing.F) {
 // can refuse them.
 func signedWith(t testing.TB, etp messages.EncTicketPart, els types.AuthorizationData, k types.EncryptionKey, kvno int) []byte {
 	t.Helper()
-	ct, err := checksumType(k.KeyType)
-	if err != nil {
-		t.Fatal(err)
-	}
-	et, err := crypto.GetEtype(k.KeyType)
+	ct, et, err := macFor(k.KeyType)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -397,7 +393,12 @@ func wrapIF(t testing.TB, raw []byte) types.AuthorizationDataEntry {
 func TestFindBoundsWhatItWillRead(t *testing.T) {
 	k := key(t)
 	etp := etpOf(t)
-	big := types.AuthorizationDataEntry{ADType: 1, ADData: make([]byte, MaxContainer+1)}
+	// Well-formed AuthorizationData, one element, over the bound: only the bound refuses it.
+	fat, err := asn1.Marshal(types.AuthorizationData{{ADType: 1000, ADData: make([]byte, MaxContainer)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	big := types.AuthorizationDataEntry{ADType: 1, ADData: fat}
 	if _, found, err := Find(wire(t, etp, types.AuthorizationData{big}), k, 3); !found || !errors.Is(err, ErrMalformed) {
 		t.Errorf("oversize IF-RELEVANT: found=%v err=%v", found, err)
 	}
@@ -416,8 +417,76 @@ func TestFindBoundsWhatItWillRead(t *testing.T) {
 	}
 	for name, d := range map[string][]byte{"garbage": {0xff, 0x00}, "trailing": append(one, 0), "nine": nine} {
 		ad := types.AuthorizationData{{ADType: 1, ADData: d}}
-		if _, found, err := Find(wire(t, etp, ad), k, 3); found || err != nil {
+		if _, found, err := Find(wire(t, etp, ad), k, 3); !found || !errors.Is(err, ErrMalformed) {
 			t.Errorf("%s: found=%v err=%v", name, found, err)
+		}
+	}
+	// Garbage where a container should be is malformed, not unsigned.
+	if _, err := Verify([]byte{0xff, 0x00}, etp, k, 3); !errors.Is(err, ErrMalformed) {
+		t.Errorf("garbage container: %v", err)
+	}
+}
+
+// Every encoding step of Seal and Verify can fail; none yields a marking.
+func TestSealAndVerifyFailWhenEncodingFails(t *testing.T) {
+	k := key(t)
+	etp := etpOf(t)
+	c := Claims{Methods: []string{MethodPasskey}, UID: 1001}
+	ad, err := Seal(etp, c, k, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	good := wire(t, etp, ad)
+	orig := marshal
+	t.Cleanup(func() { marshal = orig })
+	boom := errors.New("boom")
+	for n := 1; n <= 3; n++ {
+		calls := 0
+		marshal = func(v any) ([]byte, error) {
+			calls++
+			if calls == n {
+				return nil, boom
+			}
+			return orig(v)
+		}
+		if _, err := Seal(etp, c, k, 3); !errors.Is(err, boom) {
+			t.Errorf("Seal, encoding call %d failing: %v", n, err)
+		}
+	}
+	for n := 1; n <= 2; n++ {
+		calls := 0
+		marshal = func(v any) ([]byte, error) {
+			calls++
+			if calls == n {
+				return nil, boom
+			}
+			return orig(v)
+		}
+		if _, _, err := Find(good, k, 3); !errors.Is(err, ErrMalformed) {
+			t.Errorf("Find, encoding call %d failing: %v", n, err)
+		}
+	}
+	marshal = orig
+	// A key too short to MAC with: Seal says so.
+	short := k
+	short.KeyValue = []byte{1, 2, 3}
+	if _, err := Seal(etp, c, short, 3); err == nil {
+		t.Error("a 3-byte key sealed")
+	}
+}
+
+func TestEncodeUIDIsMinimalDER(t *testing.T) {
+	for uid, want := range map[uint32][]byte{
+		1:          {2, 1, 1},
+		127:        {2, 1, 127},
+		128:        {2, 2, 0, 128},
+		1001:       {2, 2, 3, 0xe9},
+		65535:      {2, 3, 0, 0xff, 0xff},
+		1 << 31:    {2, 5, 0, 0x80, 0, 0, 0},
+		0xffffffff: {2, 5, 0, 0xff, 0xff, 0xff, 0xff},
+	} {
+		if got := encodeUID(uid); !bytes.Equal(got, want) {
+			t.Errorf("%d: % x, want % x", uid, got, want)
 		}
 	}
 }

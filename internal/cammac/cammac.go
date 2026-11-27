@@ -32,6 +32,7 @@ import (
 	"github.com/jcmturner/gofork/encoding/asn1"
 	"github.com/jcmturner/gokrb5/v8/asn1tools"
 	"github.com/jcmturner/gokrb5/v8/crypto"
+	"github.com/jcmturner/gokrb5/v8/crypto/etype"
 	"github.com/jcmturner/gokrb5/v8/iana/adtype"
 	"github.com/jcmturner/gokrb5/v8/iana/asnAppTag"
 	"github.com/jcmturner/gokrb5/v8/iana/chksumtype"
@@ -128,34 +129,52 @@ func elements(c Claims) (types.AuthorizationData, error) {
 		out = append(out, types.AuthorizationDataEntry{ADType: ADAuthIndicator, ADData: encodeIndicators(c.Methods)})
 	}
 	if c.UID != 0 {
-		b, err := asn1.Marshal(int64(c.UID))
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, types.AuthorizationDataEntry{ADType: ADRequestorUID, ADData: b})
+		out = append(out, types.AuthorizationDataEntry{ADType: ADRequestorUID, ADData: encodeUID(c.UID)})
 	}
 	return out, nil
 }
+
+// encodeUID is the DER INTEGER of a positive uid: minimal, with a leading zero
+// octet when the top bit is set.
+func encodeUID(uid uint32) []byte {
+	var b []byte
+	for v := uid; v > 0; v >>= 8 {
+		b = append([]byte{byte(v)}, b...)
+	}
+	if b[0]&0x80 != 0 {
+		b = append([]byte{0}, b...)
+	}
+	return append([]byte{0x02, byte(len(b))}, b...)
+}
+
+// marshal is replaceable so a test can fail each encoding step in turn.
+var marshal = asn1.Marshal
 
 // signedBytes is the DER the verifier covers: etp with its authorization-data
 // replaced by els.
 func signedBytes(etp messages.EncTicketPart, els types.AuthorizationData) ([]byte, error) {
 	etp.AuthorizationData = els
-	b, err := asn1.Marshal(etp)
+	b, err := marshal(etp)
 	if err != nil {
 		return nil, err
 	}
 	return asn1tools.AddASNAppTag(b, asnAppTag.EncTicketPart), nil
 }
 
-func checksumType(etype int32) (int32, error) {
-	switch etype {
+// macFor is the checksum type and algorithm for a krbtgt key: the AES types
+// only, as MIT's CAMMAC verifier.
+func macFor(keyType int32) (int32, etype.EType, error) {
+	var ct int32
+	switch keyType {
 	case etypeID.AES256_CTS_HMAC_SHA1_96:
-		return chksumtype.HMAC_SHA1_96_AES256, nil
+		ct = chksumtype.HMAC_SHA1_96_AES256
 	case etypeID.AES128_CTS_HMAC_SHA1_96:
-		return chksumtype.HMAC_SHA1_96_AES128, nil
+		ct = chksumtype.HMAC_SHA1_96_AES128
+	default:
+		return 0, nil, fmt.Errorf("cammac: no checksum for etype %d", keyType)
 	}
-	return 0, fmt.Errorf("cammac: no checksum for etype %d", etype)
+	et, err := crypto.GetEtype(keyType)
+	return ct, et, err // the two lists agree: err is the library's, not ours
 }
 
 // Seal returns the authorization data to put in the ticket: one
@@ -167,11 +186,7 @@ func Seal(etp messages.EncTicketPart, c Claims, key types.EncryptionKey, kvno in
 	if err != nil {
 		return nil, err
 	}
-	ct, err := checksumType(key.KeyType)
-	if err != nil {
-		return nil, err
-	}
-	et, err := crypto.GetEtype(key.KeyType)
+	ct, et, err := macFor(key.KeyType)
 	if err != nil {
 		return nil, err
 	}
@@ -183,12 +198,12 @@ func Seal(etp messages.EncTicketPart, c Claims, key types.EncryptionKey, kvno in
 	if err != nil {
 		return nil, err
 	}
-	cb, err := asn1.Marshal(container{Elements: els,
+	cb, err := marshal(container{Elements: els,
 		Verifier: verifierMAC{KVNO: kvno, MAC: types.Checksum{CksumType: ct, Checksum: mac}}})
 	if err != nil {
 		return nil, err
 	}
-	inner, err := asn1.Marshal(types.AuthorizationData{{ADType: ADCAMMAC, ADData: cb}})
+	inner, err := marshal(types.AuthorizationData{{ADType: ADCAMMAC, ADData: cb}})
 	if err != nil {
 		return nil, err
 	}
@@ -206,13 +221,16 @@ func Find(etp messages.EncTicketPart, key types.EncryptionKey, kvno int) (c Clai
 		if ad.ADType != adtype.ADIfRelevant {
 			continue
 		}
+		// Every IF-RELEVANT of a TGT of ours is read; one that does not decode
+		// within the bounds could hide a container, so it is an error, not
+		// "unmarked".
 		if len(ad.ADData) > MaxContainer {
 			return Claims{}, true, ErrMalformed
 		}
 		var inner types.AuthorizationData
 		rest, uerr := asn1.Unmarshal(ad.ADData, &inner)
 		if uerr != nil || len(rest) != 0 || len(inner) > maxElements {
-			return Claims{}, false, nil // not ours to read: another IF-RELEVANT
+			return Claims{}, true, ErrMalformed
 		}
 		for _, e := range inner {
 			if e.ADType == ADCAMMAC {
@@ -240,8 +258,7 @@ func Verify(raw []byte, etp messages.EncTicketPart, key types.EncryptionKey, kvn
 	if len(raw) > MaxContainer {
 		return Claims{}, ErrMalformed
 	}
-	rest, err := asn1.Unmarshal(raw, &ct)
-	if err != nil || len(rest) != 0 {
+	if _, err := asn1.Unmarshal(raw, &ct); err != nil { // trailing bytes: the re-encoding below differs
 		return Claims{}, ErrMalformed
 	}
 	if len(ct.Elements) > maxElements {
@@ -251,19 +268,15 @@ func Verify(raw []byte, etp messages.EncTicketPart, key types.EncryptionKey, kvn
 	if len(v.MAC.Checksum) == 0 {
 		return Claims{}, ErrUnsigned
 	}
-	if again, err := asn1.Marshal(ct); err != nil || !bytes.Equal(again, raw) || v.KVNO != kvno {
+	if again, err := marshal(ct); err != nil || !bytes.Equal(again, raw) || v.KVNO != kvno {
 		return Claims{}, ErrMalformed
 	}
 	cl, err := decodeElements(ct.Elements)
 	if err != nil {
 		return Claims{}, err
 	}
-	want, err := checksumType(key.KeyType)
+	want, et, err := macFor(key.KeyType)
 	if err != nil || v.MAC.CksumType != want {
-		return Claims{}, ErrBadMAC
-	}
-	et, err := crypto.GetEtype(key.KeyType)
-	if err != nil {
 		return Claims{}, ErrBadMAC
 	}
 	msg, err := signedBytes(etp, ct.Elements)
@@ -298,32 +311,19 @@ func encodeIndicators(ms []string) []byte {
 		body = append(body, 0x0c, byte(len(m)))
 		body = append(body, m...)
 	}
-	if len(body) < 128 {
-		return append([]byte{0x30, byte(len(body))}, body...)
-	}
-	return append([]byte{0x30, 0x81, byte(len(body))}, body...)
+	// At most 4 strings of a closed list (18 bytes with their header): the
+	// length is always the short form.
+	return append([]byte{0x30, byte(len(body))}, body...)
 }
 
-// decodeIndicators reads that DER strictly: definite short or one-byte long
-// lengths, minimal, no trailing bytes, every string valid UTF-8 and on the
-// closed list.
+// decodeIndicators reads that DER strictly: the short definite length (what
+// encodeIndicators writes; no accepted content reaches 128 bytes), no trailing
+// bytes, every string valid UTF-8 and on the closed list.
 func decodeIndicators(b []byte) ([]string, bool) {
-	if len(b) < 2 || b[0] != 0x30 {
+	if len(b) < 2 || b[0] != 0x30 || b[1] >= 128 || len(b)-2 != int(b[1]) {
 		return nil, false
 	}
-	n, off := int(b[1]), 2
-	if b[1] == 0x81 {
-		if len(b) < 3 || b[2] < 128 {
-			return nil, false
-		}
-		n, off = int(b[2]), 3
-	} else if b[1] >= 128 {
-		return nil, false
-	}
-	if len(b)-off != n {
-		return nil, false
-	}
-	b = b[off:]
+	b = b[2:]
 	var ms []string
 	for len(b) > 0 {
 		if len(b) < 2 || b[0] != 0x0c || b[1] >= 128 {

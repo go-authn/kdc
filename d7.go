@@ -126,7 +126,7 @@ func (s *Server) newTGT(cname types.PrincipalName, tflags asn1.BitString, authTi
 	krbtgt := s.krbtgtName()
 	key, kvno, err := s.cfg.Services.GetEncryptionKey(krbtgt, s.cfg.Realm, 0, defaultEtype)
 	if err != nil {
-		return messages.Ticket{}, types.EncryptionKey{}, err
+		return messages.Ticket{}, types.EncryptionKey{}, fmt.Errorf("kdc: no krbtgt key: %w", err)
 	}
 	etp := messages.EncTicketPart{
 		Flags: tflags, Key: session, CRealm: s.cfg.Realm, CName: cname,
