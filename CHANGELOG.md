@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.13.0
+
+- Added (D7, `docs/design/pac-d7.md`, #54): with `Config.PAC`, every TGT the AS
+  or `Mint` issues carries an RFC 8129 CAMMAC signed with the krbtgt key (MIT's
+  `cammac.c` format): the requestor's uidNumber and, for bridge logons, the
+  method (`bridge-passkey`, `bridge-federated`, `bridge-machine`).
+- Added: the CVE-2021-42287 defence. The TGS refuses a marked TGT whose uid is
+  not the directory's now (`KDC_ERR_TGT_REVOKED`); a forged, unsigned or
+  re-keyed marking is `KRB_AP_ERR_MODIFIED`. A client's own
+  enc-authorization-data is never read as a marking.
+- Changed: every PAC carries S-1-18-1 and the D bit; bridge-minted TGTs add a
+  domain SID with RID `PAC.MintedRID` (default 1<<30). S-1-18-2 is never issued.
+- Changed (breaking below v1): `MintRequest.Method` (`passkey`, `federated`,
+  `machine`) is required when `Config.PAC` is set (HTTP 400 otherwise,
+  `ErrMintBadMethod`). The bridge must send it.
+- Added: `PAC.UnmarkedWindow` (default and maximum 10 h) and
+  `PAC.RefuseUnmarked`: TGTs minted before the upgrade carry no marking and are
+  accepted as password logons (no minted SID) for that long, then refused.
+- Deferred (U5): a service-ticket authentication indicator, until the
+  Samba/Windows harness has run.
+
 ## v0.12.2
 
 - Fixed: the PAC set the D bit (`LOGON_EXTRA_SIDS`, 0x20) while ExtraSids was

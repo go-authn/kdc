@@ -2,6 +2,7 @@ package kdc
 
 import (
 	"errors"
+	"github.com/go-authn/kdc/internal/cammac"
 	"time"
 
 	"github.com/jcmturner/gofork/encoding/asn1"
@@ -79,7 +80,7 @@ func (s *Server) serveAS(req *messages.ASReq) []byte {
 			"this realm issues only krbtgt tickets from an AS-REQ", nil)
 	}
 
-	rep, err := s.issue(req.ReqBody, id.Name(), sname, key, keyusage.AS_REP_ENCPART, msgtype.KRB_AS_REP, time.Time{}, nil)
+	rep, err := s.issue(req.ReqBody, id.Name(), sname, key, keyusage.AS_REP_ENCPART, msgtype.KRB_AS_REP, time.Time{}, nil, cammac.Claims{UID: uidOf(id)})
 	if err != nil {
 		if errors.Is(err, errNeverValid) {
 			return s.krbErr(sname, errorcode.KDC_ERR_NEVER_VALID, err.Error(), nil)
@@ -163,7 +164,8 @@ func (s *Server) checkTimestamp(raw []byte, key types.EncryptionKey) error {
 
 // issue builds a ticket and the reply that carries it.
 func (s *Server) issue(body messages.KDCReqBody, cname string, sname types.PrincipalName,
-	replyKey types.EncryptionKey, usage uint32, mt int, notAfter time.Time, header *messages.EncTicketPart) ([]byte, error) {
+	replyKey types.EncryptionKey, usage uint32, mt int, notAfter time.Time, header *messages.EncTicketPart,
+	mark cammac.Claims) ([]byte, error) {
 
 	start := now().UTC()
 	// RFC 4120 2.1 / 3.1.3 / 3.3.3, MIT get_ticket_flags (kdc_util.c): a ticket
@@ -218,8 +220,13 @@ func (s *Server) issue(body messages.KDCReqBody, cname string, sname types.Princ
 		tkt        messages.Ticket
 		sessionKey types.EncryptionKey
 	)
-	if s.wantsPAC(sname) {
-		tkt, sessionKey, err = s.pacTicket(client, sname, tflags, kvno, authTime, start, end)
+	if s.pacState() != nil && principalName(sname) == principalName(s.krbtgtName()) {
+		// D7: a TGT carries the container. An AS TGT is a password logon: its
+		// container holds the uidNumber and no login method; a TGT reissued by
+		// the TGS carries over what was verified.
+		tkt, sessionKey, err = s.newTGT(client, tflags, authTime, start, end, mark)
+	} else if s.wantsPAC(sname) {
+		tkt, sessionKey, err = s.pacTicket(client, sname, tflags, kvno, authTime, start, end, mark)
 	} else {
 		tkt, sessionKey, err = messages.NewTicket(client, s.cfg.Realm, sname, s.cfg.Realm,
 			tflags, s.cfg.Services, defaultEtype, kvno, authTime, start, end, time.Time{})

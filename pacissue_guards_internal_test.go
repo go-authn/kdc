@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/go-authn/directory"
+	"github.com/go-authn/kdc/internal/cammac"
 	"github.com/go-authn/kdc/internal/pac"
 	"github.com/jcmturner/gokrb5/v8/crypto/etype"
 	"github.com/jcmturner/gokrb5/v8/iana/errorcode"
@@ -67,8 +68,9 @@ func ticketFor(t *testing.T, people directory.Source, kt *keytab.Keytab) []byte 
 
 func tgsOnce(t *testing.T, s *Server) []byte {
 	t.Helper()
+	// An unmarked TGT from before the server started (D7: still accepted).
 	n := now().UTC()
-	out, _ := tgsWith(t, s, n.Add(-time.Minute), n.Add(time.Hour), n.Add(time.Hour), false)
+	out, _ := tgsWith(t, s, s.started.Add(-time.Minute), n.Add(time.Hour), n.Add(time.Hour), false)
 	return out
 }
 
@@ -374,7 +376,7 @@ func TestAPACRefusesAClientTheBuilderCannotEncode(t *testing.T) {
 	}
 	_, _, err = s2.pacTicket(types.PrincipalName{NameType: nametypePrincipal, NameString: []string{long}},
 		types.PrincipalName{NameType: nametypeSrvInst, NameString: []string{"nfs", "localhost"}},
-		types.NewKrbFlags(), 2, time.Unix(5, 0), time.Unix(5, 0), time.Unix(3600, 0))
+		types.NewKrbFlags(), 2, time.Unix(5, 0), time.Unix(5, 0), time.Unix(3600, 0), cammac.Claims{})
 	if !errors.Is(err, pac.ErrTooBig) {
 		t.Errorf("pacTicket for a name too long: %v", err)
 	}

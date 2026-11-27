@@ -1,7 +1,9 @@
 # Design: D7, the asserted-identity SID for minted tickets
 
-Status: DESIGN, all decisions accepted 2026-11-27 (see "Decisions taken");
-implementation follows in go-authn/kdc PRs. It makes decision D7 of
+Status: IMPLEMENTED in v0.13.0 (all decisions accepted 2026-11-27, see
+"Decisions taken"), except U5 (service-ticket indicator), deferred until the
+Samba/Windows harness has run. Not interop-tested: MIT parsing our CAMMAC
+(only the format was read, in `cammac.c`). It makes decision D7 of
 [pac.md](pac.md) implementable. pac.md lines 3-7 say D7 "is not applied" and
 give no reason. This document gives the reason, proposes a mechanism, and lists
 the decisions that are the owner's.

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/go-authn/directory"
+	"github.com/go-authn/kdc/internal/cammac"
 	"github.com/go-authn/kdc/internal/pac"
 	"github.com/jcmturner/gofork/encoding/asn1"
 	"github.com/jcmturner/gokrb5/v8/asn1tools"
@@ -36,6 +37,20 @@ type PAC struct {
 
 	// NetBIOSDomain is LogonDomainName; empty, the realm's first label.
 	NetBIOSDomain string
+
+	// MintedRID is the RID, under DomainSID, of the SID that marks a TGT a
+	// bridge minted (a passkey, federated or machine logon); zero means
+	// [DefaultMintedRID]. It must not be a uidNumber or gidNumber in use.
+	MintedRID uint32
+
+	// UnmarkedWindow is how long after the KDC started a TGT issued BEFORE the
+	// upgrade (one with no authentication marking) is still accepted; zero
+	// means [MaxUnmarkedWindow], and none is longer.
+	UnmarkedWindow time.Duration
+
+	// RefuseUnmarked refuses every unmarked TGT at once, ignoring
+	// UnmarkedWindow: for a realm whose TGTs were all issued by this version.
+	RefuseUnmarked bool
 }
 
 // NewDomainSID returns a random domain SID, S-1-5-21-a-b-c.
@@ -88,7 +103,7 @@ func (c *Config) checkPAC() error {
 	if err != nil || sid.Authority != 5 || len(sid.Sub) != 4 || sid.Sub[0] != 21 {
 		return fmt.Errorf("%w: %q", ErrBadDomainSID, c.PAC.DomainSID)
 	}
-	return nil
+	return c.checkD7()
 }
 
 func (s *Server) pacState() *pacState {
@@ -303,7 +318,7 @@ func (s *Server) newTicket(cname types.PrincipalName, sname types.PrincipalName,
 
 // pacTicket issues a service ticket carrying a PAC for client.
 func (s *Server) pacTicket(client types.PrincipalName, sname types.PrincipalName, tflags asn1.BitString,
-	kvno int, authTime, start, end time.Time) (messages.Ticket, types.EncryptionKey, error) {
+	kvno int, authTime, start, end time.Time, mark cammac.Claims) (messages.Ticket, types.EncryptionKey, error) {
 
 	st := s.pacState()
 	id, err := s.lookup(client)
@@ -315,6 +330,7 @@ func (s *Server) pacTicket(client types.PrincipalName, sname types.PrincipalName
 	if err != nil {
 		return messages.Ticket{}, types.EncryptionKey{}, err
 	}
+	s.markSIDs(li, st, mark)
 	return s.newTicket(client, sname, tflags, kvno, authSec, start, end,
 		func(zeroed []byte, serverKey, kdcKey types.EncryptionKey) ([]byte, error) {
 			return pac.Build(&pac.Input{

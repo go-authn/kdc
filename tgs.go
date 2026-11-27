@@ -4,6 +4,7 @@ import (
 	"crypto/md5"
 	"crypto/subtle"
 	"errors"
+	"github.com/go-authn/kdc/internal/cammac"
 	"slices"
 
 	"github.com/jcmturner/gokrb5/v8/crypto"
@@ -135,14 +136,25 @@ func (s *Server) serveTGS(req *messages.TGSReq, body []byte) []byte {
 	if ap.Ticket.DecryptedEncPart.CRealm != s.cfg.Realm {
 		return s.krbErr(sname, errorcode.KDC_ERR_C_PRINCIPAL_UNKNOWN, "a client of another realm", nil)
 	}
-	if _, err := s.lookup(ap.Ticket.DecryptedEncPart.CName); err != nil {
+	id, err := s.lookup(ap.Ticket.DecryptedEncPart.CName)
+	if err != nil {
 		if errors.Is(err, errDirectoryDown) {
 			s.logf("kdc: the directory could not be read: %v", err)
 			return s.krbErr(sname, errorcode.KDC_ERR_SVC_UNAVAILABLE, "the directory is unavailable", nil)
 		}
 		return s.krbErr(sname, errorcode.KDC_ERR_C_PRINCIPAL_UNKNOWN, "this realm does not know that client", nil)
 	}
-	rep, err := s.issue(req.ReqBody, name[0], sname, session, keyusage.TGS_REP_ENCPART_SESSION_KEY, msgtype.KRB_TGS_REP, tgt.EndTime, &tgt)
+	// D7: with a PAC configured, the TGT's signed marking is verified before
+	// anything is issued, and says how the person logged in.
+	var mark cammac.Claims
+	if s.pacState() != nil {
+		var code int32
+		var why string
+		if mark, code, why = s.checkMark(&tgt, tgtKey, ap.Ticket.EncPart.KVNO, id); code != 0 {
+			return s.krbErr(sname, code, why, nil)
+		}
+	}
+	rep, err := s.issue(req.ReqBody, name[0], sname, session, keyusage.TGS_REP_ENCPART_SESSION_KEY, msgtype.KRB_TGS_REP, tgt.EndTime, &tgt, mark)
 	if err != nil {
 		if errors.Is(err, errNeverValid) {
 			return s.krbErr(sname, errorcode.KDC_ERR_NEVER_VALID, err.Error(), nil)
