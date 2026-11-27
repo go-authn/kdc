@@ -183,11 +183,12 @@ func Build(in *Input, serverKey, kdcKey types.EncryptionKey) ([]byte, error) {
 		{TypeLogonInfo, li},
 		{TypeClientInfo, clientInfo(in.ClientName, in.AuthTime.Truncate(time.Second))},
 		{TypeUPNDNSInfo, upnDNSInfo(in.UPN, in.DNSDomain, in.SamName, in.UserSID)},
-		{TypeAttributesInfo, attr[:]},
-		{TypeRequestorSID, in.RequestorSID.Binary()},
 	}
 	if in.ServiceTicket {
+		// 17 and 18 are TGT-only ([MS-KILE] 3.3.5.6.4.7, 3.3.5.6.4.8, 3.3.5.7.9).
 		bufs = append(bufs, buf{TypeTicketChecksum, sigBuf()}, buf{TypeFullChecksum, sigBuf()})
+	} else {
+		bufs = append(bufs, buf{TypeAttributesInfo, attr[:]}, buf{TypeRequestorSID, in.RequestorSID.Binary()})
 	}
 	bufs = append(bufs, buf{TypeServerChecksum, sigBuf()}, buf{TypeKDCChecksum, sigBuf()})
 

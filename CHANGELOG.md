@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.12.2
+
+- Fixed: the PAC set the D bit (`LOGON_EXTRA_SIDS`, 0x20) while ExtraSids was
+  empty; it is now set only when ExtraSids is non-empty ([MS-PAC] 2.5).
+- Fixed: service-ticket PACs carried ATTRIBUTES_INFO (17) and PAC_REQUESTOR
+  (18), which are TGT-only ([MS-KILE] 3.3.5.6.4.7-8); they are removed.
+- Docs: `docs/design/pac.md` no longer claims a CVE-2021-42287 defence: TGTs
+  carry no PAC, so none is in place; it points to D7 (#54).
+
 ## v0.12.1
 
 - Fixed: a UDP reply over 1465 bytes (a ticket with a big PAC) is replaced by

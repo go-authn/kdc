@@ -213,7 +213,6 @@ func (s *Server) logonInfo(st *pacState, id *directory.Identity, authTime time.T
 		KickOffTime: pac.FileTimeNever, PasswordMustChange: pac.FileTimeNever,
 		PasswordCanChange: pac.FileTimeNever,
 		EffectiveName:     id.Name(), UserID: uid, PrimaryGroupID: primary,
-		UserFlags:       0x20, // LOGON_EXTRA_SIDS
 		LogonDomainName: st.netbios, LogonDomainID: st.domain,
 		UserAccountControl: 0x10, // USER_NORMAL_ACCOUNT
 	}
@@ -236,6 +235,9 @@ func (s *Server) logonInfo(st *pacState, id *directory.Identity, authTime time.T
 			seen[n] = true
 			li.Groups = append(li.Groups, pac.Group{RID: n, Attrs: pac.GroupAttrs})
 		}
+	}
+	if len(li.ExtraSIDs) > 0 {
+		li.UserFlags |= 0x20 // LOGON_EXTRA_SIDS ([MS-PAC] 2.5): only with ExtraSids
 	}
 	return li, st.domain.WithRID(uid), nil
 }
