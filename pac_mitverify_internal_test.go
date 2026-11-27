@@ -56,9 +56,14 @@ func TestMITVerifiesThePACWeIssue(t *testing.T) {
 	if err != nil || !strings.HasSuffix(strings.TrimSpace(o), "OK") {
 		t.Fatalf("MIT refuses the PAC: %v\n%s", err, o)
 	}
-	for _, typ := range []uint32{pac.TypeLogonInfo, pac.TypeClientInfo, pac.TypeServerChecksum, pac.TypeKDCChecksum, pac.TypeTicketChecksum, pac.TypeFullChecksum, pac.TypeRequestorSID} {
+	for _, typ := range []uint32{pac.TypeLogonInfo, pac.TypeClientInfo, pac.TypeServerChecksum, pac.TypeKDCChecksum, pac.TypeTicketChecksum, pac.TypeFullChecksum} {
 		if !strings.Contains(o, "buffer "+strconv.FormatUint(uint64(typ), 10)+"\n") {
 			t.Errorf("MIT does not see buffer %d:\n%s", typ, o)
+		}
+	}
+	for _, typ := range []uint32{pac.TypeAttributesInfo, pac.TypeRequestorSID} {
+		if strings.Contains(o, "buffer "+strconv.FormatUint(uint64(typ), 10)+"\n") {
+			t.Errorf("MIT sees TGT-only buffer %d in a service ticket:\n%s", typ, o)
 		}
 	}
 

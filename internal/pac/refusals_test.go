@@ -195,8 +195,8 @@ func TestVerifyRefusals(t *testing.T) {
 	if p, _ := parse(good); verify(p, srv, kdc, true, tb) != nil {
 		t.Fatal("the control does not verify")
 	}
-	// Header entries, in order: 1 10 12 17 18 16 19 6 7.
-	idx := map[uint32]int{TypeTicketChecksum: 5, TypeFullChecksum: 6, TypeServerChecksum: 7, TypeKDCChecksum: 8}
+	// Header entries, in order: 1 10 12 16 19 6 7.
+	idx := map[uint32]int{TypeTicketChecksum: 3, TypeFullChecksum: 4, TypeServerChecksum: 5, TypeKDCChecksum: 6}
 	for typ, i := range idx {
 		e := 8 + 16*i
 		for name, mut := range map[string]func([]byte){

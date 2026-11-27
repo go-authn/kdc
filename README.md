@@ -239,8 +239,9 @@ cfg.PAC = &kdc.PAC{DomainSID: sid, Services: []string{"cifs/files.example.org"}}
 ```
 
 Those services' tickets carry `KERB_VALIDATION_INFO`, `CLIENT_INFO`, the
-UPN/DNS info, `PAC_REQUESTOR` (CVE-2021-42287) and the server, KDC, ticket and
-full signatures (16 and 19, CVE-2022-37967). User and group RIDs are the
+UPN/DNS info and the server, KDC, ticket and full signatures (16 and 19,
+CVE-2022-37967). TGTs carry no PAC, so the CVE-2021-42287 name-confusion
+defence is not in place yet (design: `docs/design/pac-d7.md`). User and group RIDs are the
 directory's `uidNumber` and `gidNumber`; a person with no `uidNumber` gets no
 ticket for such a service (fail closed), two accounts sharing a number are
 refused, groups without a `gidNumber` are left out, and at most 256 groups are

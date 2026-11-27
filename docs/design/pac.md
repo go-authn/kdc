@@ -103,7 +103,9 @@ Per [MS-PAC] §2.5 and [MS-KILE] §3.3.5.6.4.1:
 - **GroupIds**: one RID per directory group, with attributes 7
   (mandatory | enabled-by-default | enabled, §2.2.1). The user's primary group
   is included.
-- **UserFlags**: D (0x20, ExtraSids present). H is 0 because we have no
+- **UserFlags**: D (0x20) only when ExtraSids is non-empty. As of v0.12.2 the
+  implementation sets no ExtraSids, so D is 0 (v0.12.0 and v0.12.1 set D with
+  an empty ExtraSids: a defect). H is 0 because we have no
   resource groups. **UserSessionKey**: zero (MUST).
 - **LogonServer**: the KDC's NetBIOS host name. **LogonDomainName**: the
   NetBIOS domain name. This MUST equal Samba's `workgroup`: winbindd looks the
@@ -111,8 +113,9 @@ Per [MS-PAC] §2.5 and [MS-KILE] §3.3.5.6.4.1:
   `find_lookup_domain_from_name`).
 - **LogonDomainId**: the domain SID (D1).
 - **UserAccountControl**: USER_NORMAL_ACCOUNT | USER_DONT_EXPIRE_PASSWORD.
-- **ExtraSids**: S-1-18-1 (AUTHENTICATION_AUTHORITY_ASSERTED_IDENTITY) with
-  attributes 7 (§3.3.5.6.4.1, "SHOULD"). See D7 for minted tickets.
+- **ExtraSids**: designed as S-1-18-1 (AUTHENTICATION_AUTHORITY_ASSERTED_IDENTITY)
+  with attributes 7 (§3.3.5.6.4.1, "SHOULD"). NOT implemented: the list is
+  empty today. See D7 and `docs/design/pac-d7.md` (go-authn/kdc#54).
 - **ResourceGroupDomainSid, ResourceGroupIds**: NULL, count 0.
 
 ### CLIENT_INFO
@@ -164,8 +167,9 @@ only in the PAC element's contents.
 
 ### At the TGS
 
-Today's TGS regenerates everything from the directory (`tgs.go:138`). The
-design keeps that, with checks added before issuing:
+Today's TGS regenerates everything from the directory (`tgs.go:138`) and does
+none of the checks below: TGTs carry no PAC (see D7, go-authn/kdc#54, for the
+planned defence). The design adds, before issuing:
 
 1. Find the PAC in the TGT (first AD-IF-RELEVANT element, type 128). Verify
    signature 6 with the krbtgt key (the TGT's server key) and signature 7 over
@@ -353,7 +357,7 @@ because it has no LOGON_INFO. See D6.
 | **PAC forgery by a client.** | The PAC is inside the encrypted ticket. Changing it needs the service key (service ticket) or the krbtgt key (TGT). Signatures 6 and 7 are checked at the TGS on every TGT ([MS-PAC] §4.1.1). |
 | **Forgery by a service-key holder.** It can rewrite the PAC of tickets for ITS service; nothing stops that, and the same holds for Windows. It cannot make the KDC re-sign it: the TGS accepts only TGTs of this realm (`tgs.go:62-72`). | Signatures 16 and 19 are emitted anyway, for when S4U or renewal arrive (CVE-2020-17049 / 2022-37967 class). |
 | **The krbtgt key extracted from the keytab.** Everything is forgeable. | Out of scope for the PAC. `realm.go:30-35` already says that file is the KDC's alone. |
-| **Name confusion (CVE-2021-42287 class).** A TGT for name N is presented after N was deleted and re-created for someone else, or renamed. | REQUESTOR_SID in every TGT. The TGS refuses KDC_ERR_TGT_REVOKED unless the directory gives N the SAME SID now ([MS-KILE] §3.3.5.7). This works only if a re-created person gets a NEW RID; option C would break it, option A is as good as the directory's uidNumber reuse policy (D2). |
+| **Name confusion (CVE-2021-42287 class).** A TGT for name N is presented after N was deleted and re-created for someone else, or renamed. | **NOT DEFENDED TODAY (v0.12.x).** TGTs carry no PAC, so there is no REQUESTOR_SID in a TGT for the TGS to check, and service tickets no longer carry buffer 18 either (TGT-only, [MS-KILE] §3.3.5.6.4.8). The defence below is the design, to be built with D7 (go-authn/kdc#54, `docs/design/pac-d7.md`). Design: REQUESTOR_SID in every TGT. The TGS refuses KDC_ERR_TGT_REVOKED unless the directory gives N the SAME SID now ([MS-KILE] §3.3.5.7). This works only if a re-created person gets a NEW RID; option C would break it, option A is as good as the directory's uidNumber reuse policy (D2). |
 | **Collision between a local login and a federated eppn**, both arriving through a `directory.Set`. | The RID uniqueness check covers it. SamName and UPN are different strings. |
 | **Downgrade: RC4/HMAC_MD5.** | Never produced. The TGS verifier accepts only SignatureType 16 with an etype 18 key, so the §3 sample PAC (HMAC_MD5) must be refused. |
 | **Downgrade: a PAC-less TGT** presented after PAC issuance is on. | Refused once the transition window ends (D5). |
