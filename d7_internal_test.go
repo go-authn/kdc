@@ -22,6 +22,7 @@ import (
 	"github.com/jcmturner/gofork/encoding/asn1"
 	"github.com/jcmturner/gokrb5/v8/asn1tools"
 	"github.com/jcmturner/gokrb5/v8/crypto"
+	"github.com/jcmturner/gokrb5/v8/crypto/etype"
 	"github.com/jcmturner/gokrb5/v8/iana/adtype"
 	"github.com/jcmturner/gokrb5/v8/iana/asnAppTag"
 	"github.com/jcmturner/gokrb5/v8/iana/errorcode"
@@ -545,5 +546,89 @@ func TestMintHandlerAnswers400ForABadMethod(t *testing.T) {
 	// Unknown fields are still refused.
 	if got := post(`{"principal":"alice","method":"passkey","admin":true}`); got != http.StatusBadRequest {
 		t.Errorf("an unknown field: %d", got)
+	}
+}
+
+// newTGT reports every step that fails; none of them yields a ticket.
+func TestNewTGTRefusesWhateverFailsWhileMakingIt(t *testing.T) {
+	s, _ := d7Server(t, aliceDir(t), nil)
+	n := now().UTC()
+	mk := func(s *Server) error {
+		_, _, err := s.newTGT(aliceName, types.NewKrbFlags(), n, n, n.Add(time.Hour), cammac.Claims{UID: 1001})
+		return err
+	}
+	if err := mk(s); err != nil {
+		t.Fatal(err)
+	}
+	boom := errors.New("boom")
+	a, b, c, d := getEtype, genKey, marshalASN1, encryptWith
+	t.Cleanup(func() { getEtype, genKey, marshalASN1, encryptWith = a, b, c, d })
+	reset := func() { getEtype, genKey, marshalASN1, encryptWith = a, b, c, d }
+	for name, set := range map[string]func(){
+		"etype":   func() { getEtype = func(int32) (etype.EType, error) { return nil, boom } },
+		"genkey":  func() { genKey = func(etype.EType) (types.EncryptionKey, error) { return types.EncryptionKey{}, boom } },
+		"marshal": func() { marshalASN1 = func(any) ([]byte, error) { return nil, boom } },
+		"encrypt": func() {
+			encryptWith = func([]byte, types.EncryptionKey, uint32, int) (types.EncryptedData, error) {
+				return types.EncryptedData{}, boom
+			}
+		},
+	} {
+		reset()
+		set()
+		if err := mk(s); err == nil {
+			t.Errorf("%s failing: a ticket", name)
+		}
+	}
+	reset()
+	// No krbtgt key.
+	empty := keytab.New()
+	if err := empty.AddEntry("nfs/localhost", testRealm, "x", time.Now(), 2, 18); err != nil {
+		t.Fatal(err)
+	}
+	s2 := *s
+	s2.cfg.Services = empty
+	if err := mk(&s2); err == nil {
+		t.Error("no krbtgt key: a ticket")
+	}
+	// A krbtgt key whose type cannot carry a CAMMAC checksum (rc4-hmac).
+	rc4 := keytab.New()
+	if err := rc4.AddEntry("krbtgt/"+testRealm, testRealm, "x", time.Now(), 2, 23); err != nil {
+		t.Fatal(err)
+	}
+	s3 := *s
+	s3.cfg.Services = rc4
+	if err := mk(&s3); err == nil {
+		t.Error("an rc4 krbtgt key: a ticket")
+	}
+	// A marking the container cannot say (an unknown method).
+	if _, _, err := s.newTGT(aliceName, types.NewKrbFlags(), n, n, n.Add(time.Hour), cammac.Claims{Methods: []string{"nope"}}); err == nil {
+		t.Error("an unsayable marking: a ticket")
+	}
+	if err := (&Config{}).checkD7(); err != nil {
+		t.Errorf("no PAC: %v", err)
+	}
+}
+
+// The AS looks the person up again to mark the TGT; whichever read of the
+// directory fails, the answer is an error, never a TGT.
+func TestTheASRefusesWhenTheDirectoryFailsWhileMarking(t *testing.T) {
+	for n := 1; n <= 6; n++ {
+		d := aliceDir(t)
+		s, _ := d7Server(t, d, nil)
+		id, err := s.lookup(aliceName)
+		if err != nil {
+			t.Fatal(err)
+		}
+		key, err := s.cfg.keyFor(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		d.calls, d.failFrom = 0, n
+		out := s.handle(asReq(t, "alice", krbtgtName, timestampPA(t, key, now().UTC())))
+		var as messages.ASRep
+		if as.Unmarshal(out) == nil && d.calls >= n {
+			t.Errorf("failing from read %d: a TGT was issued", n)
+		}
 	}
 }

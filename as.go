@@ -80,7 +80,7 @@ func (s *Server) serveAS(req *messages.ASReq) []byte {
 			"this realm issues only krbtgt tickets from an AS-REQ", nil)
 	}
 
-	rep, err := s.issue(req.ReqBody, id.Name(), sname, key, keyusage.AS_REP_ENCPART, msgtype.KRB_AS_REP, time.Time{}, nil, cammac.Claims{})
+	rep, err := s.issue(req.ReqBody, id.Name(), sname, key, keyusage.AS_REP_ENCPART, msgtype.KRB_AS_REP, time.Time{}, nil, cammac.Claims{UID: uidOf(id)})
 	if err != nil {
 		if errors.Is(err, errNeverValid) {
 			return s.krbErr(sname, errorcode.KDC_ERR_NEVER_VALID, err.Error(), nil)
@@ -224,13 +224,6 @@ func (s *Server) issue(body messages.KDCReqBody, cname string, sname types.Princ
 		// D7: a TGT carries the container. An AS TGT is a password logon: its
 		// container holds the uidNumber and no login method; a TGT reissued by
 		// the TGS carries over what was verified.
-		if header == nil {
-			id, lerr := s.lookup(client)
-			if lerr != nil {
-				return nil, lerr
-			}
-			mark = cammac.Claims{UID: uidOf(id)}
-		}
 		tkt, sessionKey, err = s.newTGT(client, tflags, authTime, start, end, mark)
 	} else if s.wantsPAC(sname) {
 		tkt, sessionKey, err = s.pacTicket(client, sname, tflags, kvno, authTime, start, end, mark)

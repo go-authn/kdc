@@ -264,3 +264,207 @@ func FuzzCAMMACDecode(f *testing.F) {
 		}
 	})
 }
+
+// signedWith seals arbitrary elements, as a KDC with a bug (or an attacker with
+// the krbtgt key) could: the MAC is right, so only the decoder's own bounds
+// can refuse them.
+func signedWith(t testing.TB, etp messages.EncTicketPart, els types.AuthorizationData, k types.EncryptionKey, kvno int) []byte {
+	t.Helper()
+	ct, err := checksumType(k.KeyType)
+	if err != nil {
+		t.Fatal(err)
+	}
+	et, err := crypto.GetEtype(k.KeyType)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg, err := signedBytes(etp, els)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mac, err := et.GetChecksumHash(k.KeyValue, msg, KeyUsage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := asn1.Marshal(container{Elements: els, Verifier: verifierMAC{KVNO: kvno, MAC: types.Checksum{CksumType: ct, Checksum: mac}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func ind(b ...byte) types.AuthorizationDataEntry {
+	return types.AuthorizationDataEntry{ADType: ADAuthIndicator, ADData: b}
+}
+
+func uidEl(b ...byte) types.AuthorizationDataEntry {
+	return types.AuthorizationDataEntry{ADType: ADRequestorUID, ADData: b}
+}
+
+// str is an indicator element holding the strings, each a UTF8String.
+func str(ss ...string) types.AuthorizationDataEntry {
+	return ind(encodeIndicators(ss)...)
+}
+
+func TestEverySignedButMalformedContainerIsRefused(t *testing.T) {
+	k := key(t)
+	etp := etpOf(t)
+	pk := MethodPasskey
+	long := make([]byte, 600)
+	many := make(types.AuthorizationData, 9)
+	for i := range many {
+		many[i] = types.AuthorizationDataEntry{ADType: int32(1000 + i)}
+	}
+	cases := map[string]types.AuthorizationData{
+		"nine elements":                    many,
+		"an element over 512 bytes":        {{ADType: 1000, ADData: long}},
+		"two indicator elements":           {str(pk), str(pk)},
+		"two uid elements":                 {uidEl(0x02, 0x02, 0x03, 0xe9), uidEl(0x02, 0x02, 0x03, 0xe9)},
+		"uid zero":                         {uidEl(0x02, 0x01, 0x00)},
+		"uid negative":                     {uidEl(0x02, 0x01, 0xff)},
+		"uid over 2^32-1":                  {uidEl(0x02, 0x05, 0x01, 0x00, 0x00, 0x00, 0x00)},
+		"uid with trailing bytes":          {uidEl(0x02, 0x01, 0x05, 0x00)},
+		"uid not an integer":               {uidEl(0x04, 0x01, 0x05)},
+		"indicators: empty":                {ind()},
+		"indicators: not a sequence":       {ind(0x31, 0x00)},
+		"indicators: no strings":           {ind(0x30, 0x00)},
+		"indicators: long form, too short": {ind(0x30, 0x81)},
+		"indicators: long form under 128":  {ind(append([]byte{0x30, 0x81, 0x10}, append([]byte{0x0c, 0x0e}, make([]byte, 14)...)...)...)},
+		"indicators: two-byte length":      {ind(0x30, 0x82, 0x00, 0x00)},
+		"indicators: indefinite length":    {ind(0x30, 0x80, 0x00, 0x00)},
+		"indicators: length too long":      {ind(0x30, 0x05, 0x0c, 0x01, 'a')},
+		"indicators: length too short":     {ind(0x30, 0x01, 0x0c, 0x01, 'a')},
+		"indicators: wrong string tag":     {ind(0x30, 0x03, 0x04, 0x01, 'a')},
+		"indicators: truncated string":     {ind(0x30, 0x01, 0x0c)},
+		"indicators: long string length":   {ind(0x30, 0x03, 0x0c, 0x81, 0x01)},
+		"indicators: empty string":         {ind(0x30, 0x02, 0x0c, 0x00)},
+		"indicators: unknown method":       {ind(0x30, 0x03, 0x0c, 0x01, 'a')},
+		"indicators: invalid UTF-8":        {ind(0x30, 0x03, 0x0c, 0x01, 0xff)},
+		"indicators: string runs past end": {ind(0x30, 0x02, 0x0c, 0x05)},
+	}
+	// A string of 65 bytes (over maxIndicator) and five strings (over maxIndicators).
+	s65 := append([]byte{0x30, 0x43, 0x0c, 0x41}, bytes.Repeat([]byte{'a'}, 65)...)
+	cases["indicators: string over 64 bytes"] = types.AuthorizationData{ind(s65...)}
+	five := []byte{0x30, 5 * (2 + byte(len(pk)))}
+	for i := 0; i < 5; i++ {
+		five = append(five, 0x0c, byte(len(pk)))
+		five = append(five, pk...)
+	}
+	cases["indicators: five strings"] = types.AuthorizationData{ind(five...)}
+	for name, els := range cases {
+		raw := signedWith(t, etp, els, k, 3)
+		if _, err := Verify(raw, etp, k, 3); !errors.Is(err, ErrMalformed) {
+			t.Errorf("%s: Verify %v, want ErrMalformed", name, err)
+		}
+		if _, err := Decode(raw); !errors.Is(err, ErrMalformed) {
+			t.Errorf("%s: Decode %v, want ErrMalformed", name, err)
+		}
+		if _, found, err := Find(wire(t, etp, types.AuthorizationData{wrapIF(t, raw)}), k, 3); !found || err == nil {
+			t.Errorf("%s: Find found=%v err=%v", name, found, err)
+		}
+	}
+	// The control: the same machinery accepts a good one.
+	good := signedWith(t, etp, types.AuthorizationData{str(pk), uidEl(0x02, 0x02, 0x03, 0xe9)}, k, 3)
+	if c, err := Verify(good, etp, k, 3); err != nil || c.UID != 1001 || len(c.Methods) != 1 {
+		t.Fatalf("control: %+v %v", c, err)
+	}
+	// Bounds on the container itself.
+	for name, raw := range map[string][]byte{
+		"over 4096 bytes":      append(bytes.Clone(good), make([]byte, MaxContainer)...),
+		"trailing bytes":       append(bytes.Clone(good), 0),
+		"nine elements, bytes": signedWith(t, etp, many, k, 3),
+	} {
+		if _, err := Verify(raw, etp, k, 3); !errors.Is(err, ErrMalformed) {
+			t.Errorf("%s: Verify %v", name, err)
+		}
+		if _, err := Decode(raw); !errors.Is(err, ErrMalformed) {
+			t.Errorf("%s: Decode %v", name, err)
+		}
+	}
+}
+
+func wrapIF(t testing.TB, raw []byte) types.AuthorizationDataEntry {
+	t.Helper()
+	in, err := asn1.Marshal(types.AuthorizationData{{ADType: ADCAMMAC, ADData: raw}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return types.AuthorizationDataEntry{ADType: 1, ADData: in}
+}
+
+// A container wrapped in AD-IF-RELEVANT that is too big, and one that is not
+// ours at all.
+func TestFindBoundsWhatItWillRead(t *testing.T) {
+	k := key(t)
+	etp := etpOf(t)
+	big := types.AuthorizationDataEntry{ADType: 1, ADData: make([]byte, MaxContainer+1)}
+	if _, found, err := Find(wire(t, etp, types.AuthorizationData{big}), k, 3); !found || !errors.Is(err, ErrMalformed) {
+		t.Errorf("oversize IF-RELEVANT: found=%v err=%v", found, err)
+	}
+	// Not ours: garbage, trailing bytes, more than 8 elements.
+	many := make(types.AuthorizationData, 9)
+	for i := range many {
+		many[i] = types.AuthorizationDataEntry{ADType: int32(1000 + i)}
+	}
+	nine, err := asn1.Marshal(many)
+	if err != nil {
+		t.Fatal(err)
+	}
+	one, err := asn1.Marshal(types.AuthorizationData{{ADType: 1000}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, d := range map[string][]byte{"garbage": {0xff, 0x00}, "trailing": append(one, 0), "nine": nine} {
+		ad := types.AuthorizationData{{ADType: 1, ADData: d}}
+		if _, found, err := Find(wire(t, etp, ad), k, 3); found || err != nil {
+			t.Errorf("%s: found=%v err=%v", name, found, err)
+		}
+	}
+}
+
+// Short inputs to the strict DER reader: each is refused, none is read past its end.
+func TestDecodeIndicatorsRefusesTruncations(t *testing.T) {
+	pk := []byte{0x0c, byte(len(MethodPasskey))}
+	pk = append(pk, MethodPasskey...)
+	for name, b := range map[string][]byte{
+		"nil":                      nil,
+		"one byte":                 {0x30},
+		"tag only, no strings":     {0x30, 0x00},
+		"long form, no length":     {0x30, 0x81},
+		"long form, small length":  {0x30, 0x81, 0x05},
+		"two-byte length":          {0x30, 0x82, 0x00, 0x10},
+		"indefinite":               {0x30, 0x80},
+		"length over the content":  append([]byte{0x30, byte(len(pk) + 1)}, pk...),
+		"length under the content": append([]byte{0x30, byte(len(pk) - 1)}, pk...),
+		"string tag alone":         {0x30, 0x01, 0x0c},
+		"string with long length":  {0x30, 0x03, 0x0c, 0x81, 0x0e},
+		"wrong string tag":         append([]byte{0x30, byte(len(pk))}, append([]byte{0x04}, pk[1:]...)...),
+	} {
+		if ms, ok := decodeIndicators(b); ok || ms != nil {
+			t.Errorf("%s: %v %v", name, ms, ok)
+		}
+	}
+	if ms, ok := decodeIndicators(append([]byte{0x30, byte(len(pk))}, pk...)); !ok || len(ms) != 1 {
+		t.Errorf("control: %v %v", ms, ok)
+	}
+}
+
+// A container that parses and verifies but is bigger than the bound.
+func TestAWellFormedContainerOverTheBoundIsRefused(t *testing.T) {
+	k := key(t)
+	etp := etpOf(t)
+	els := make(types.AuthorizationData, maxElements)
+	for i := range els {
+		els[i] = types.AuthorizationDataEntry{ADType: int32(1000 + i), ADData: make([]byte, maxElementData)}
+	}
+	raw := signedWith(t, etp, els, k, 3)
+	if len(raw) <= MaxContainer {
+		t.Fatalf("only %d bytes", len(raw))
+	}
+	if _, err := Verify(raw, etp, k, 3); !errors.Is(err, ErrMalformed) {
+		t.Errorf("Verify: %v", err)
+	}
+	if _, err := Decode(raw); !errors.Is(err, ErrMalformed) {
+		t.Errorf("Decode: %v", err)
+	}
+}
