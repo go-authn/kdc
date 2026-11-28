@@ -14,7 +14,9 @@
 //     name that was deleted and created again from the person the ticket was
 //     issued to (CVE-2021-42287's confusion).
 //
-// The signature is MIT's (cammac.c, krb5_authdata_verify_cammac): a checksum
+// The signature is MIT's (src/kdc/cammac.c, cammac_create and
+// cammac_check_kdcver; MIT's krbtgt-verifier accepts it, see
+// mit_cammac_internal_test.go at the module root): a checksum
 // of type 16 (HMAC-SHA1-96-AES256) or 15 under key usage 64 over the DER of
 // the EncTicketPart with authorization-data replaced by the container's
 // ELEMENTS (not wrapped in AD-IF-RELEVANT). The verifier names the key version
@@ -46,8 +48,14 @@ const (
 	ADCAMMAC int32 = 96
 	// ADAuthIndicator is AD-AUTHENTICATION-INDICATOR (RFC 8129).
 	ADAuthIndicator int32 = 97
-	// ADRequestorUID is a LOCAL-USE ad-type (negative, RFC 4120 5.2.6): the
-	// requestor's uidNumber as a DER INTEGER.
+	// ADRequestorUID is a PRIVATE ad-type of this package, not MIT's and not
+	// registered anywhere: RFC 4120 5.2.6 reserves every negative ad-type for
+	// local use, and -100 is the one we chose. It holds the requestor's
+	// uidNumber as a DER INTEGER. It is not MS-PAC's PAC_REQUESTOR (buffer 18,
+	// a SID, which lives in the PAC) and MIT defines no negative ad-type; MIT
+	// ignores the element (it is signed with the rest of the container and read
+	// only by this KDC). A second implementation choosing -100 for another
+	// purpose would collide: nothing arbitrates local-use values.
 	ADRequestorUID int32 = -100
 	// KeyUsage is KRB5_KEYUSAGE_CAMMAC.
 	KeyUsage uint32 = 64

@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Verified: MIT krb5kdc (1.21, container) accepts the CAMMAC of v0.13.0: it
+  verifies the kdc-verifier and applies `require_auth` to our indicator
+  (`interop/mitcammac`, `MIT_CAMMAC=1`, manual and a CI lane). No format change.
+- Docs: ad-type -100 (requestor uidNumber) is this module's private, local-use
+  ad-type (RFC 4120 5.2.6), not MIT's and not MS-PAC's PAC_REQUESTOR.
+
 ## v0.13.0
 
 - Added (D7, `docs/design/pac-d7.md`, #54): with `Config.PAC`, every TGT the AS
