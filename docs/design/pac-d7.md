@@ -290,7 +290,33 @@ table that follows is the record of the options.
   harness shows a CAMMAC is ignored there.
 - **U6.** No HW-AUTHENT for now.
 - **U7.** The requestor's uidNumber travels in the CAMMAC, and the TGS compares
-  it with the directory (CVE-2021-42287 requestor check). Implemented.
+  it with the directory (CVE-2021-42287 requestor check). Implemented, as an
+  element of ad-type **-100**. That number is this module's own PRIVATE
+  ad-type: RFC 4120 section 5.2.6 reserves every negative ad-type for local
+  use, so it is registered nowhere and does not collide with an IANA value. MIT
+  krb5 (5966c6bc, `krb5.hin:1861-1874`) defines no negative ad-type; it is
+  not MS-PAC's PAC_REQUESTOR (buffer 18, a SID, inside the PAC). MIT ignores
+  the element (proved, see the MIT interop section); another implementation
+  using -100 for something else would collide, and nothing arbitrates local-use
+  values.
+
+## MIT interop
+
+Until then no MIT code had parsed a CAMMAC of ours. `interop/mitcammac` runs
+Debian 13's `krb5kdc` (MIT 1.21) for the same realm with the same krbtgt key
+(a password-derived AES-256 key, kvno 2); `MIT_CAMMAC=1 go test -run
+TestMITAcceptsTheCAMMACWeIssue -v .` (needs docker) seals TGTs with
+`newTGT`, as the AS and the Mint do, and sends TGS-REQs for services whose MIT
+principal has `require_auth`. Result: MIT issues the ticket exactly when our
+indicator matches (also one of several in a space-separated `require_auth`), and
+its own service ticket then carries the indicator in a CAMMAC of MIT's; the
+wrong or no indicator is `KDC_ERR_POLICY` (12) with MIT's log line
+`Required auth indicators not present in ticket`. A container whose indicator
+was rewritten with the MAC kept, a ticket changed after sealing (end time,
+flags) and a dropped container each give `KDC_ERR_POLICY` too (MIT drops a
+container it cannot verify, silently), so each positive has a negative twin.
+RFC 8129 section 3 is followed: the strings are site-defined, without a colon,
+inside an AD-CAMMAC.
 
 Already fixed in v0.12.2 (go-authn/kdc#55): the D bit with empty ExtraSids, and
 buffers 17/18 in service tickets. pac.md no longer claims a defence that is not

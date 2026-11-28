@@ -70,6 +70,24 @@ jobs:
           grep -q "were served by this realm" judge.log || {
             echo "::error::MIT's client was never served by this realm"; exit 1; }
 
+  # MIT's own krb5kdc, in a container, reads the CAMMAC this package writes
+  # (interop/mitcammac). -v and a grep: a skip must not pass as a green lane.
+  mit-cammac:
+    name: MIT accepts our CAMMAC
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with: { go-version-file: go.mod, check-latest: true, cache: true }
+      - name: MIT krb5kdc reads our CAMMAC
+        env:
+          MIT_CAMMAC: "1"
+        run: go test -count=1 -v -run TestMITAcceptsTheCAMMACWeIssue . | tee mit.log
+      - name: the test ran, and MIT issued and refused
+        run: |
+          grep -q -- "--- PASS: TestMITAcceptsTheCAMMACWeIssue" mit.log || { echo "::error::the MIT interop test did not pass"; exit 1; }
+          grep -q "Required auth indicators not present in ticket" mit.log || { echo "::error::MIT never refused a wrong indicator"; exit 1; }
+
   race:
     name: race detector
     runs-on: ubuntu-latest
